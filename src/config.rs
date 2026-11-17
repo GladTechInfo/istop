@@ -28,9 +28,9 @@ pub struct Config {
     pub clock: bool,
     pub boxes: Boxes,
     pub net_iface: String,
-    /// The network graph's full height in Mbit/s; `None` fits it to the
-    /// traffic shown. Never above the interface's link speed when drawn.
-    pub net_scale: Option<u64>,
+    /// The network graph's full height. Never above the interface's link
+    /// speed when drawn.
+    pub net_scale: NetScale,
     /// Disks box order, by mount point or ZFS pool name; anything not listed
     /// follows in the usual order, so a new mount still appears.
     pub disk_order: Vec<String>,
@@ -99,7 +99,7 @@ impl Default for Config {
             clock: true,
             boxes: Boxes::ALL,
             net_iface: String::new(),
-            net_scale: None,
+            net_scale: NetScale::Link,
             disk_order: Vec::new(),
             disk_hidden: Vec::new(),
         }
@@ -126,35 +126,64 @@ pub fn scale_name(mbit: u64) -> String {
     }
 }
 
-fn parse_scale(v: &str) -> Result<Option<u64>, String> {
-    if v.eq_ignore_ascii_case("auto") {
-        return Ok(None);
-    }
-    NET_SCALES
-        .iter()
-        .copied()
-        .find(|&s| scale_name(s).eq_ignore_ascii_case(v))
-        .map(Some)
-        .ok_or(format!("\"{}\" is not auto 100M 1G 10G 25G 40G 100G", v))
+/// The network graph's full height.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetScale {
+    /// The interface's link speed, whatever the port; automatic where the
+    /// driver reports none.
+    Link,
+    /// Fitted to the traffic in view.
+    Auto,
+    /// Fixed, in Mbit/s.
+    Fixed(u64),
 }
 
-/// The scale drawn: the chosen one, capped at the link speed where the
-/// driver reports it, so a 40G choice shows a 10G port at its own full height.
-pub fn net_scale_for(chosen: Option<u64>, link: Option<u64>) -> Option<u64> {
-    chosen.map(|s| link.map_or(s, |l| s.min(l)))
-}
-
-/// `m`: the next scale after the one drawn, for an interface of this link
-/// speed. Steps stop at the link speed (itself the last step when it is not
-/// one of the fixed ones, 2.5G say), then wrap back to automatic.
-pub fn next_net_scale(chosen: Option<u64>, link: Option<u64>) -> Option<u64> {
-    let mut steps: Vec<u64> = NET_SCALES.iter().copied().filter(|&s| link.is_none_or(|l| s < l)).collect();
-    if let Some(l) = link {
-        steps.push(l);
+impl NetScale {
+    fn parse(v: &str) -> Result<NetScale, String> {
+        if v.eq_ignore_ascii_case("link") {
+            return Ok(NetScale::Link);
+        }
+        if v.eq_ignore_ascii_case("auto") {
+            return Ok(NetScale::Auto);
+        }
+        NET_SCALES
+            .iter()
+            .copied()
+            .find(|&s| scale_name(s).eq_ignore_ascii_case(v))
+            .map(NetScale::Fixed)
+            .ok_or(format!("\"{}\" is not link auto 100M 1G 10G 25G 40G 100G", v))
     }
-    match net_scale_for(chosen, link) {
-        None => steps.first().copied(),
-        Some(now) => steps.into_iter().find(|&s| s > now),
+
+    fn render(self) -> String {
+        match self {
+            NetScale::Link => "link".into(),
+            NetScale::Auto => "auto".into(),
+            NetScale::Fixed(s) => scale_name(s),
+        }
+    }
+
+    /// The scale drawn, in Mbit/s, or `None` for fitted to the traffic. A
+    /// fixed one is capped at the link speed, so a 40G choice shows a 10G
+    /// port at its own full height.
+    pub fn for_link(self, link: Option<u64>) -> Option<u64> {
+        match self {
+            NetScale::Link => link,
+            NetScale::Auto => None,
+            NetScale::Fixed(s) => Some(link.map_or(s, |l| s.min(l))),
+        }
+    }
+
+    /// `m`: the next scale after the one drawn, for an interface of this
+    /// link speed. Fixed steps below the link speed, then the link speed
+    /// (2.5G say, when it is not one of the fixed ones), then automatic.
+    pub fn next(self, link: Option<u64>) -> NetScale {
+        let steps = NET_SCALES.iter().copied().filter(|&s| link.is_none_or(|l| s < l));
+        let after = |now: u64| steps.clone().find(|&s| s > now);
+        match (self.for_link(link), link) {
+            (None, _) => steps.clone().next().map_or(NetScale::Link, NetScale::Fixed),
+            (Some(now), Some(l)) if now >= l => NetScale::Auto,
+            (Some(now), _) => after(now).map_or(if link.is_some() { NetScale::Link } else { NetScale::Auto }, NetScale::Fixed),
+        }
     }
 }
 
@@ -208,7 +237,7 @@ impl Config {
                     "clock" => c.clock = parse_bool(v)?,
                     "shown_boxes" => c.boxes = Boxes::parse(v)?,
                     "net_iface" => c.net_iface = v.to_string(),
-                    "net_scale" => c.net_scale = parse_scale(v)?,
+                    "net_scale" => c.net_scale = NetScale::parse(v)?,
                     "disk_order" => c.disk_order = parse_list(v),
                     "disk_hidden" => c.disk_hidden = parse_list(v),
                     _ => return Err(format!("unknown option \"{}\"", k)),
@@ -283,8 +312,9 @@ clock = {}
 shown_boxes = {}
 # Network interface to start on; empty follows the busiest physical port.
 net_iface = {}
-# Network graph full height: auto (fits the traffic), 100M 1G 10G 25G 40G 100G.
-# Capped at the interface's link speed, so 40G draws a 10G port at 10G.
+# Network graph full height: link (the interface's link speed; auto where none
+# is reported), auto (fits the traffic), or 100M 1G 10G 25G 40G 100G, capped at
+# the link speed, so 40G draws a 10G port at 10G.
 net_scale = {}
 
 # Disks box (d arranges it): mount points or ZFS pool names, comma-separated.
@@ -308,7 +338,7 @@ disk_hidden = {}
             self.clock,
             self.boxes.render(),
             self.net_iface,
-            self.net_scale.map_or("auto".into(), scale_name),
+            self.net_scale.render(),
             self.disk_order.join(", "),
             self.disk_hidden.join(", "),
         )
@@ -361,32 +391,43 @@ mod tests {
 
     #[test]
     fn net_scale_steps_stop_at_the_link_speed() {
+        use NetScale::*;
+        // From the default, one full turn of m, as drawn.
         let walk = |link: Option<u64>| {
-            let mut seen = vec![];
-            let mut s = None;
-            loop {
-                s = next_net_scale(s, link);
-                let Some(v) = s else { break };
-                seen.push(v);
+            let mut s = Config::default().net_scale;
+            let mut seen = vec![s.for_link(link)];
+            for _ in 0..8 {
+                s = s.next(link);
+                seen.push(s.for_link(link));
+                if s == Link || (link.is_none() && s == Auto) {
+                    break;
+                }
             }
             seen
         };
-        assert_eq!(walk(Some(10_000)), [100, 1_000, 10_000]);
-        assert_eq!(walk(Some(2_500)), [100, 1_000, 2_500]);
-        assert_eq!(walk(None), NET_SCALES);
+        assert_eq!(walk(Some(10_000)), [Some(10_000), None, Some(100), Some(1_000), Some(10_000)]);
+        assert_eq!(walk(Some(2_500)), [Some(2_500), None, Some(100), Some(1_000), Some(2_500)]);
+        // No link speed: the default is automatic, and every step is offered.
+        let mut none = vec![None];
+        none.extend(NET_SCALES.map(Some));
+        none.push(None);
+        assert_eq!(walk(None), none);
         // A 40G choice made on a faster port draws a 10G port at 10G, and the
         // next step from there is automatic, not 25G.
-        assert_eq!(net_scale_for(Some(40_000), Some(10_000)), Some(10_000));
-        assert_eq!(next_net_scale(Some(40_000), Some(10_000)), None);
-        assert_eq!(next_net_scale(Some(40_000), Some(100_000)), Some(100_000));
+        assert_eq!(Fixed(40_000).for_link(Some(10_000)), Some(10_000));
+        assert_eq!(Fixed(40_000).next(Some(10_000)), Auto);
+        assert_eq!(Fixed(40_000).next(Some(100_000)), Link);
+        assert_eq!(Auto.next(Some(10)), Link);
     }
 
     #[test]
     fn net_scale_parses_and_renders() {
         let (c, errors) = Config::parse("net_scale = 25g");
         assert!(errors.is_empty(), "{:?}", errors);
-        assert_eq!(c.net_scale, Some(25_000));
-        assert_eq!(Config::parse(&c.render()).0.net_scale, Some(25_000));
+        assert_eq!(c.net_scale, NetScale::Fixed(25_000));
+        assert_eq!(Config::parse(&c.render()).0.net_scale, NetScale::Fixed(25_000));
+        assert_eq!(Config::parse("net_scale = auto").0.net_scale, NetScale::Auto);
+        assert_eq!(Config::parse("").0.net_scale, NetScale::Link);
         assert_eq!(Config::parse("net_scale = 2.5G").1.len(), 1);
         assert_eq!(scale_name(2_500), "2.5G");
     }

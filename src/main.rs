@@ -859,8 +859,12 @@ fn handle_key(
         }
         KeyCode::Char('m') => {
             let link = net.and_then(|i| app.nets.get(i)).and_then(|n| n.speed_mbit);
-            ui.cfg.net_scale = config::next_net_scale(ui.cfg.net_scale, link);
-            let name = ui.cfg.net_scale.map_or("auto".into(), |s| format!("{}bit/s", config::scale_name(s)));
+            ui.cfg.net_scale = ui.cfg.net_scale.next(link);
+            let name = match (ui.cfg.net_scale, ui.cfg.net_scale.for_link(link)) {
+                (_, None) => "auto".into(),
+                (config::NetScale::Link, Some(s)) => format!("link speed, {}bit/s", config::scale_name(s)),
+                (_, Some(s)) => format!("{}bit/s", config::scale_name(s)),
+            };
             ui.say(format!("network graph scale: {}", name), false);
         }
         KeyCode::Char('a') => {

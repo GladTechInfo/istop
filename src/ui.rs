@@ -5,7 +5,7 @@
 //! bar gets its own colour from the ramp — a stock gauge paints one flat colour.
 
 use crate::app::{App, Damped, Disk, Net};
-use crate::config::{self, Boxes};
+use crate::config::{self, Boxes, NetScale};
 use crate::procs::{self, Proc, Row, SortKey};
 use crate::theme::*;
 use ratatui::prelude::*;
@@ -38,7 +38,7 @@ pub struct View<'a> {
     pub editing: bool,
     pub net: Option<usize>,
     /// The chosen network graph scale in Mbit/s, before the link-speed cap.
-    pub net_scale: Option<u64>,
+    pub net_scale: NetScale,
     pub popup: Option<Popup<'a>>,
     pub status: Option<(&'a str, bool)>,
     pub kernel_threads: bool,
@@ -800,7 +800,7 @@ fn draw_net(f: &mut Frame, area: Rect, v: &View) {
     let ic = icons(v.icons);
     let net = v.net.and_then(|i| a.nets.get(i));
     let mut title = title_span(ic.net, "network").to_vec();
-    let fixed = net.and_then(|n| config::net_scale_for(v.net_scale, n.speed_mbit));
+    let fixed = net.and_then(|n| v.net_scale.for_link(n.speed_mbit));
     if let Some(n) = net {
         title.push(Span::styled(" · ", Style::default().fg(DIM)));
         title.push(Span::styled(n.name.clone(), Style::default().fg(TEXT).add_modifier(Modifier::BOLD)));
@@ -808,7 +808,11 @@ fn draw_net(f: &mut Frame, area: Rect, v: &View) {
             let speed = if s >= 1000 { format!("{} Gbit/s", s as f64 / 1000.0) } else { format!("{} Mbit/s", s) };
             title.push(Span::styled(format!(" · {}", speed), Style::default().fg(DIM)));
         }
-        let scale = fixed.map_or("auto".into(), config::scale_name);
+        // "link" when following the port, so it reads as the default it is.
+        let scale = match (v.net_scale, fixed) {
+            (NetScale::Link, Some(_)) => "link".into(),
+            (_, f) => f.map_or("auto".into(), config::scale_name),
+        };
         title.push(Span::styled(format!(" · scale {}", scale), Style::default().fg(DIM)));
         title.push(Span::styled(
             format!("  {}/{}  b n m ", v.net.unwrap_or(0) + 1, a.nets.len()),
@@ -1280,7 +1284,7 @@ pub fn help_lines(vim: bool) -> Vec<(&'static str, &'static str)> {
         ("", "network"),
         ("n  b", "next / previous interface"),
         ("a", "back to the busiest interface"),
-        ("m", "graph scale: auto, 100M … 100G, up to the link speed"),
+        ("m", "graph scale: link speed, auto, 100M … 100G below it"),
     ];
     if vim {
         v.push(("", "vim keys"));

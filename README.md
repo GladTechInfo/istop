@@ -45,7 +45,7 @@ Press `?` in istop for the full list.
 | `1`–`4` | show or hide the CPU, memory, network and process boxes |
 | `d` | disks menu: choose which disks and pools are shown, and in what order |
 | `n` `b`, `a` | next or previous interface; back to automatic |
-| `m` | network graph scale: auto, then 100M, 1G, 10G, 25G, 40G, 100G up to the link speed |
+| `m` | network graph scale: link speed (default), auto, then 100M, 1G, 10G, 25G, 40G, 100G below it |
 | `s`, `i` | damped or raw bars; icons or ASCII |
 | `W` | save the current settings |
 | `Ctrl+Z` | suspend |
@@ -64,11 +64,13 @@ selected row, `r` returns to the default order with everything shown. The choice
 neither appears after the ordered ones, so a new mount is never silently lost. `--once` still
 reports every disk.
 
-The network graph scale (`m`, kept as `net_scale`) is `auto` — the graph fits the traffic in view
-— or a fixed full height in bit/s. Fixed scales stop at the interface's negotiated link speed: on a
-10 Gbit/s port `m` steps auto → 100M → 1G → 10G → auto, and a 40G setting saved on a faster port
-draws a 10G port at 10G. A link speed that is not one of the steps (2.5G, say) is itself the last
-step. Interfaces that report no speed (bridges, most virtual ones) offer every step.
+The network graph scale (`m`, kept as `net_scale`) is by default `link`: full height is the
+interface's negotiated link speed, so a graph shows how much of the port is in use. `auto` fits
+the graph to the traffic in view; the fixed scales are full heights in bit/s, and stop below the
+link speed: on a 10 Gbit/s port `m` steps link (10G) → auto → 100M → 1G → link. A fixed setting
+above a port's speed (40G saved on a faster port) draws it at its link speed. Interfaces that
+report no speed (bridges, most virtual ones) are drawn automatic under `link` and offer every
+fixed step.
 
 ## Building
 
