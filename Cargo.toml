@@ -1,0 +1,25 @@
+[package]
+name = "istop"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal system monitor: CPU, memory, disks, network and processes"
+license = "GPL-3.0-or-later"
+readme = "README.md"
+repository = "https://github.com/GladTechInfo/istop"
+keywords = ["system", "monitor", "top", "tui"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+ratatui = "=0.29.0"
+crossterm = "=0.28.1"
+# System calls made directly in Rust (no C library bindings in istop itself).
+rustix = { version = "0.38.44", features = ["fs", "process", "param"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+# Nothing here unwinds deliberately, and ratatui's panic hook still restores
+# the terminal, since the hook runs before the abort.
+panic = "abort"
