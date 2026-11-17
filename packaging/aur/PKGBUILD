@@ -6,7 +6,7 @@
 # may lag the latest release; the AUR copy is always current.
 
 pkgname=istop
-pkgver=0.3.1
+pkgver=0.3.2
 pkgrel=1
 pkgdesc='Terminal system monitor: CPU, memory, disks, ZFS pools, network and processes, with per-container attribution'
 arch=('x86_64')
@@ -17,7 +17,7 @@ makedepends=('cargo')
 # The release profile strips the binary, so a -debug package would be empty.
 options=('!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('7b757c3ad1848cc080b873307d38df3ae20bc91ddac8170f8ade74c18a7e7341')
+sha256sums=('3e28b299cb43b5861ee56fe0d60389c06b71c19a9bd51513498e067f1fd45e23')
 
 prepare() {
   cd "$pkgname-$pkgver"
