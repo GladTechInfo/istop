@@ -28,6 +28,11 @@ pub struct Config {
     pub clock: bool,
     pub boxes: Boxes,
     pub net_iface: String,
+    /// Disks box order, by mount point or ZFS pool name; anything not listed
+    /// follows in the usual order, so a new mount still appears.
+    pub disk_order: Vec<String>,
+    /// Kept out of the disks box.
+    pub disk_hidden: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +96,8 @@ impl Default for Config {
             clock: true,
             boxes: Boxes::ALL,
             net_iface: String::new(),
+            disk_order: Vec::new(),
+            disk_hidden: Vec::new(),
         }
     }
 }
@@ -101,6 +108,11 @@ pub fn default_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("istop").join("istop.conf"))
+}
+
+/// Comma-separated names; a name holding a comma cannot be listed.
+fn parse_list(v: &str) -> Vec<String> {
+    v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
 }
 
 fn parse_bool(v: &str) -> Result<bool, String> {
@@ -148,6 +160,8 @@ impl Config {
                     "clock" => c.clock = parse_bool(v)?,
                     "shown_boxes" => c.boxes = Boxes::parse(v)?,
                     "net_iface" => c.net_iface = v.to_string(),
+                    "disk_order" => c.disk_order = parse_list(v),
+                    "disk_hidden" => c.disk_hidden = parse_list(v),
                     _ => return Err(format!("unknown option \"{}\"", k)),
                 }
                 Ok(())
@@ -165,6 +179,20 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((Config::default(), Vec::new())),
             Err(e) => Err(format!("{}: {}", path.display(), e)),
         }
+    }
+
+    /// Indices into `names` in the disks box's order: listed names first, as
+    /// listed, then the rest as they came. Hidden ones are included.
+    pub fn disk_rank(&self, names: &[&str]) -> Vec<usize> {
+        let pos = |n: &str| self.disk_order.iter().position(|o| o == n).unwrap_or(usize::MAX);
+        let mut idx: Vec<usize> = (0..names.len()).collect();
+        // Stable, so the unlisted keep their own order.
+        idx.sort_by_key(|&i| pos(names[i]));
+        idx
+    }
+
+    pub fn disk_shown(&self, name: &str) -> bool {
+        !self.disk_hidden.iter().any(|h| h == name)
     }
 
     pub fn render(&self) -> String {
@@ -206,6 +234,12 @@ clock = {}
 shown_boxes = {}
 # Network interface to start on; empty follows the busiest physical port.
 net_iface = {}
+
+# Disks box (d arranges it): mount points or ZFS pool names, comma-separated.
+# Order: these first, as listed; any other follows in the usual order.
+disk_order = {}
+# Never shown.
+disk_hidden = {}
 ",
             self.update_ms,
             self.sort.name(),
@@ -222,6 +256,8 @@ net_iface = {}
             self.clock,
             self.boxes.render(),
             self.net_iface,
+            self.disk_order.join(", "),
+            self.disk_hidden.join(", "),
         )
     }
 
@@ -257,5 +293,16 @@ mod tests {
         assert_eq!(c.boxes, Boxes { cpu: true, mem: false, net: false, proc: true });
         assert_eq!(errors.len(), 2);
         assert!(errors[0].starts_with("line 2"));
+    }
+
+    #[test]
+    fn disks_listed_first_then_the_rest_in_order() {
+        let (c, errors) = Config::parse("disk_order = pool0, /home ,\ndisk_hidden = /boot");
+        assert!(errors.is_empty(), "{:?}", errors);
+        assert_eq!(c.disk_rank(&["/", "/boot", "/home", "/srv", "pool0"]), vec![4, 2, 0, 1, 3]);
+        assert!(!c.disk_shown("/boot") && c.disk_shown("/"));
+        let (back, _) = Config::parse(&c.render());
+        assert_eq!(back.disk_order, ["pool0", "/home"]);
+        assert_eq!(back.disk_hidden, ["/boot"]);
     }
 }

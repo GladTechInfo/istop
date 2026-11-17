@@ -4,7 +4,7 @@
 //! as igtop does: a label, bar and figure share one row, and each cell of a
 //! bar gets its own colour from the ramp — a stock gauge paints one flat colour.
 
-use crate::app::{App, Damped, Net};
+use crate::app::{App, Damped, Disk, Net};
 use crate::config::Boxes;
 use crate::procs::{self, Proc, Row, SortKey};
 use crate::theme::*;
@@ -16,6 +16,8 @@ pub enum Popup<'a> {
     Signal(&'a Proc),
     Renice(&'a Proc, i32),
     Help { vim: bool },
+    /// The disks menu: (name, filesystem, shown), in order, and the cursor.
+    Disks { items: Vec<(String, String, bool)>, cursor: usize },
 }
 
 pub struct View<'a> {
@@ -41,6 +43,8 @@ pub struct View<'a> {
     pub list_paused: bool,
     pub boxes: Boxes,
     pub clock: Option<String>,
+    /// The disks box's rows: shown ones only, in the configured order.
+    pub disks: Vec<&'a Disk>,
 }
 
 /// Where things landed on screen, for the mouse and for paging.
@@ -296,11 +300,10 @@ fn title_span<'a>(icon: &'a str, name: &'a str) -> [Span<'a>; 2] {
 
 pub fn draw(f: &mut Frame, v: &View) -> Hit {
     let area = f.area();
-    let a = v.app;
     let b = v.boxes;
 
     let mem_rows = mem_rows(v).len() as u16;
-    let disks = a.disks.len().min(6) as u16;
+    let disks = v.disks.len().min(6) as u16;
     let mid_h = ((3 + mem_rows) + (2 + disks.max(1))).max(12);
     let mid = b.mem || b.net;
 
@@ -354,6 +357,7 @@ pub fn draw(f: &mut Frame, v: &View) -> Hit {
         Some(Popup::Signal(p)) => draw_signal(f, area, p),
         Some(Popup::Renice(p, n)) => draw_renice(f, area, p, *n),
         Some(Popup::Help { vim }) => draw_help(f, area, *vim),
+        Some(Popup::Disks { items, cursor }) => draw_disk_menu(f, area, items, *cursor),
         None => {}
     }
     hit
@@ -720,9 +724,10 @@ fn draw_disks(f: &mut Frame, area: Rect, v: &View) {
     let block = boxed(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let disks = &v.app.disks;
+    let disks = &v.disks;
     if disks.is_empty() {
-        f.render_widget(Paragraph::new(Span::styled("   no local filesystems", Style::default().fg(DIM))), inner);
+        let why = if v.app.disks.is_empty() { "   no local filesystems" } else { "   every disk hidden · d to choose" };
+        f.render_widget(Paragraph::new(Span::styled(why, Style::default().fg(DIM))), inner);
         return;
     }
     let class_w = disks.iter().map(|d| d.mount.path.chars().count()).max().unwrap_or(4).clamp(4, 16) + 1;
@@ -1177,6 +1182,42 @@ fn draw_renice(f: &mut Frame, area: Rect, p: &Proc, n: i32) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+fn draw_disk_menu(f: &mut Frame, area: Rect, items: &[(String, String, bool)], cursor: usize) {
+    let name_w = items.iter().map(|i| i.0.chars().count()).max().unwrap_or(4).clamp(12, 40);
+    let w = (name_w as u16 + 22).max(66);
+    // Two lines of help and a blank above and below the list.
+    let room = area.height.saturating_sub(7).max(1) as usize;
+    let h = items.len().min(room) as u16 + 7;
+    let inner = popup(f, area, w, h, "disks", TITLE);
+    let top = cursor.saturating_sub(room.saturating_sub(1));
+    let mut lines = vec![Line::from("")];
+    for (i, (name, fs, shown)) in items.iter().enumerate().skip(top).take(room) {
+        let sel = i == cursor;
+        let mark = if *shown { "[x]" } else { "[ ]" };
+        let fg = if *shown { TEXT } else { DIM };
+        let mut name_style = Style::default().fg(fg);
+        if sel {
+            name_style = name_style.bg(SELECT).add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(vec![
+            Span::styled(if sel { "  ▶ " } else { "    " }, Style::default().fg(AMBER)),
+            Span::styled(format!("{} ", mark), Style::default().fg(if *shown { MINT } else { DIM })),
+            Span::styled(format!(" {:<w$} ", tail(name, name_w), w = name_w), name_style),
+            Span::styled(format!(" {}", fs), Style::default().fg(DIM)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ↑ ↓  select    space  show / hide    Shift+↑ ↓ or + -  move",
+        Style::default().fg(DIM),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  r  default order, all shown    Esc d q  close    W  save",
+        Style::default().fg(DIM),
+    )));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 /// The help window's text: (keys, what they do). A blank key starts a section.
 pub fn help_lines(vim: bool) -> Vec<(&'static str, &'static str)> {
     let mut v = vec![
@@ -1186,6 +1227,7 @@ pub fn help_lines(vim: bool) -> Vec<(&'static str, &'static str)> {
         ("space", "pause sampling (in tree view: fold)"),
         ("+  -", "faster / slower refresh (in tree view: unfold / fold)"),
         ("1 2 3 4", "show or hide the cpu, memory, network, process box"),
+        ("d", "disks menu: choose and order the disks shown"),
         ("s", "damped or raw bars"),
         ("i", "Nerd Font icons or ASCII"),
         ("W", "save current settings to the config file"),

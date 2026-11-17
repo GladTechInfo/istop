@@ -350,6 +350,8 @@ enum Mode {
     /// Choosing a nice value for this PID.
     Renice(i32, i32),
     Help,
+    /// The disks menu, cursor on this row of `Ui::disk_items`.
+    Disks(usize),
 }
 
 struct Ui {
@@ -370,6 +372,8 @@ struct Ui {
     /// Chosen with n / b; `None` follows the busiest interface.
     net: Option<usize>,
     status: Option<(String, bool, Instant)>,
+    /// The disks menu's rows, in order, taken when it opens.
+    disk_items: Vec<String>,
 }
 
 impl Ui {
@@ -433,6 +437,7 @@ fn run_tui(
         list_paused: false,
         net: None,
         status: None,
+        disk_items: Vec::new(),
     };
     if let Some(s) = status {
         ui.say(s, true);
@@ -520,8 +525,27 @@ fn run_tui(
                 Mode::Signal(pid) => find(pid).map(ui::Popup::Signal),
                 Mode::Renice(pid, n) => find(pid).map(|p| ui::Popup::Renice(p, n)),
                 Mode::Help => Some(ui::Popup::Help { vim: ui.cfg.vim_keys }),
+                Mode::Disks(cursor) => Some(ui::Popup::Disks {
+                    items: ui
+                        .disk_items
+                        .iter()
+                        .map(|n| {
+                            let fs = app.disks.iter().find(|d| &d.mount.path == n).map(|d| d.mount.fstype.clone());
+                            (n.clone(), fs.unwrap_or_else(|| "gone".into()), ui.cfg.disk_shown(n))
+                        })
+                        .collect(),
+                    cursor,
+                }),
                 _ => None,
             };
+            let names: Vec<&str> = app.disks.iter().map(|d| d.mount.path.as_str()).collect();
+            let disks = ui
+                .cfg
+                .disk_rank(&names)
+                .into_iter()
+                .map(|i| &app.disks[i])
+                .filter(|d| ui.cfg.disk_shown(&d.mount.path))
+                .collect();
             // Scroll just enough to keep the selection on screen, using the
             // table height from the last frame.
             let page = (hit.rows.height as usize).max(1);
@@ -553,6 +577,7 @@ fn run_tui(
                 list_paused: ui.list_paused,
                 boxes: ui.cfg.boxes,
                 clock: clock.clone(),
+                disks,
             };
             // Synchronised output: the terminal shows the frame whole or not
             // at all, so a large redraw never tears. Ignored where unsupported.
@@ -718,6 +743,43 @@ fn handle_key(
             }
             return Flow::Go;
         }
+        Mode::Disks(c) => {
+            let n = ui.disk_items.len();
+            let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+            let vim = ui.cfg.vim_keys;
+            match k.code {
+                KeyCode::Up if shift => move_disk(ui, c, -1),
+                KeyCode::Down if shift => move_disk(ui, c, 1),
+                KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('K') => move_disk(ui, c, -1),
+                KeyCode::Char('-') | KeyCode::Char('J') => move_disk(ui, c, 1),
+                KeyCode::Up => ui.mode = Mode::Disks(c.saturating_sub(1)),
+                KeyCode::Char('k') if vim => ui.mode = Mode::Disks(c.saturating_sub(1)),
+                KeyCode::Down => ui.mode = Mode::Disks((c + 1).min(n.saturating_sub(1))),
+                KeyCode::Char('j') if vim => ui.mode = Mode::Disks((c + 1).min(n.saturating_sub(1))),
+                KeyCode::Home => ui.mode = Mode::Disks(0),
+                KeyCode::End => ui.mode = Mode::Disks(n.saturating_sub(1)),
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    if let Some(name) = ui.disk_items.get(c).cloned() {
+                        if ui.cfg.disk_shown(&name) {
+                            ui.cfg.disk_hidden.push(name);
+                        } else {
+                            ui.cfg.disk_hidden.retain(|h| *h != name);
+                        }
+                    }
+                }
+                KeyCode::Char('r') => {
+                    ui.cfg.disk_order.clear();
+                    ui.cfg.disk_hidden.clear();
+                    let names: Vec<&str> = app.disks.iter().map(|d| d.mount.path.as_str()).collect();
+                    ui.disk_items = names.iter().map(|s| s.to_string()).collect();
+                    ui.mode = Mode::Disks(0);
+                }
+                KeyCode::Char('W') => save(ui),
+                KeyCode::Esc | KeyCode::Char('d') | KeyCode::Char('q') => ui.mode = Mode::Normal,
+                _ => {}
+            }
+            return Flow::Go;
+        }
         Mode::Normal => {}
     }
 
@@ -813,6 +875,15 @@ fn handle_key(
                 ui.say("at least one box stays shown", true);
             }
         }
+        KeyCode::Char('d') => {
+            let names: Vec<&str> = app.disks.iter().map(|d| d.mount.path.as_str()).collect();
+            ui.disk_items = ui.cfg.disk_rank(&names).into_iter().map(|i| names[i].to_string()).collect();
+            if ui.disk_items.is_empty() {
+                ui.say("no local filesystems", true);
+            } else {
+                ui.mode = Mode::Disks(0);
+            }
+        }
         KeyCode::Char('s') => ui.cfg.smooth = !ui.cfg.smooth,
         KeyCode::Char('i') => ui.cfg.icons = !ui.cfg.icons,
         KeyCode::Char('W') => save(ui),
@@ -833,6 +904,19 @@ fn handle_key(
         _ => {}
     }
     Flow::Go
+}
+
+/// Moves the menu's row `c` up or down one place and makes the menu's order
+/// the configured one. Listed names not mounted now keep their place at the end.
+fn move_disk(ui: &mut Ui, c: usize, by: isize) {
+    let to = c as isize + by;
+    if c >= ui.disk_items.len() || to < 0 || to as usize >= ui.disk_items.len() {
+        return;
+    }
+    ui.disk_items.swap(c, to as usize);
+    let absent: Vec<String> = ui.cfg.disk_order.iter().filter(|o| !ui.disk_items.contains(o)).cloned().collect();
+    ui.cfg.disk_order = ui.disk_items.iter().cloned().chain(absent).collect();
+    ui.mode = Mode::Disks(to as usize);
 }
 
 fn step_sort(ui: &mut Ui, by: isize) {

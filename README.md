@@ -43,6 +43,7 @@ Press `?` in istop for the full list.
 | `k`, `N` | signal menu, renice |
 | `u`, `c`, `t` | pause the list; CPU % of a thread or the machine; kernel threads |
 | `1`–`4` | show or hide the CPU, memory, network and process boxes |
+| `d` | disks menu: choose which disks and pools are shown, and in what order |
 | `n` `b`, `a` | next or previous interface; back to automatic |
 | `s`, `i` | damped or raw bars; icons or ASCII |
 | `W` | save the current settings |
@@ -55,6 +56,12 @@ Mouse: click selects a process, a second click opens its detail box, the wheel s
 `~/.config/istop/istop.conf` (or `-c FILE`); `istop --default-config` prints every option with
 its description. Command-line options override the file. Settings are written back only when you
 press `W`.
+
+The disks menu (`d`): `↑ ↓` select, `Space` shows or hides, `Shift+↑ ↓` (or `+ -`) moves the
+selected row, `r` returns to the default order with everything shown. The choice is kept as
+`disk_order` and `disk_hidden` (mount points or ZFS pool names, comma-separated); a disk listed in
+neither appears after the ordered ones, so a new mount is never silently lost. `--once` still
+reports every disk.
 
 ## Building
 
