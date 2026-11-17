@@ -17,7 +17,7 @@ makedepends=('cargo')
 # The release profile strips the binary, so a -debug package would be empty.
 options=('!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # set from the v$pkgver tag when it exists; the AUR workflow fills it in
+sha256sums=('7b757c3ad1848cc080b873307d38df3ae20bc91ddac8170f8ade74c18a7e7341')
 
 prepare() {
   cd "$pkgname-$pkgver"
