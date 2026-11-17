@@ -96,7 +96,8 @@ impl History {
 
 pub struct Disk {
     pub mount: Mount,
-    pub bar: Damped,
+    /// Busy %, one column per second, for the row's histogram.
+    pub busy_hist: History,
     pub read_bps: Option<f64>,
     pub write_bps: Option<f64>,
     /// Share of the interval the device had I/O in flight.
@@ -312,13 +313,17 @@ impl App {
         // each mount keeps its damped bar across re-reads.
         let io = sys::read_diskstats();
         let mut disks = Vec::new();
+        let mut old = std::mem::take(&mut self.disks);
         let mut mounts = sys::read_mounts();
         if let Some(z) = self.zfs.as_mut() {
             mounts.extend(z.mounts());
         }
         for mount in mounts {
-            let mut bar = self.disks.iter().find(|d| d.mount.path == mount.path).map(|d| d.bar).unwrap_or_default();
-            bar.raw = mount.used as f64 / mount.total as f64 * 100.0;
+            let mut busy_hist = old
+                .iter_mut()
+                .find(|d| d.mount.path == mount.path)
+                .map(|d| std::mem::take(&mut d.busy_hist))
+                .unwrap_or_default();
             // Summed over the devices underneath; busy is the busiest of
             // them, since one saturated disk holds up the whole pool.
             let (mut r, mut w, mut busy): (Option<f64>, Option<f64>, Option<f64>) = (None, None, None);
@@ -330,7 +335,10 @@ impl App {
                     busy = Some(busy.map_or(b, |x: f64| x.max(b)));
                 }
             }
-            disks.push(Disk { mount, bar, read_bps: r, write_bps: w, busy_pct: busy });
+            if let (Some(b), Some(dt)) = (busy, dt) {
+                busy_hist.add(b, dt);
+            }
+            disks.push(Disk { mount, busy_hist, read_bps: r, write_bps: w, busy_pct: busy });
         }
         self.disks = disks;
         self.prev_io = io;
@@ -423,7 +431,6 @@ impl App {
             .iter()
             .chain([&self.temp_bar, &self.freq_bar, &self.watts_bar])
             .chain(self.mem_bars.iter())
-            .chain(self.disks.iter().map(|d| &d.bar))
             .map(|d| step(d, main))
             .chain(self.cores.iter().map(|d| step(d, core)))
             .collect()
@@ -437,7 +444,6 @@ impl App {
             .chain(std::iter::once(&mut self.freq_bar))
             .chain(std::iter::once(&mut self.watts_bar))
             .chain(self.mem_bars.iter_mut())
-            .chain(self.disks.iter_mut().map(|d| &mut d.bar))
     }
 }
 

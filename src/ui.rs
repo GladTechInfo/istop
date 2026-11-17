@@ -180,6 +180,8 @@ struct BarRow {
     class: String,
     name: String,
     pct: f64,
+    /// Drawn instead of the bar: a one-line history, 0-100, oldest first.
+    hist: Option<Vec<f64>>,
     value: Vec<(String, Color)>,
 }
 
@@ -218,7 +220,16 @@ fn render_bar_rows(buf: &mut Buffer, area: Rect, rows: &[BarRow], cols: &Cols) {
         );
         let x = put(buf, x, y, room(x), &format!("{:<w$}", r.name, w = cols.name), Style::default().fg(DIM));
         let x = x + 1;
-        bar(buf, x, y, r.pct, &colours, room(x));
+        match &r.hist {
+            Some(h) => {
+                // The empty track first, so the history reads as a bar's twin.
+                bar(buf, x, y, 0.0, &colours, room(x));
+                let width = bw.min(room(x)) as u16;
+                let data: Vec<f64> = h.iter().map(|v| v / 100.0).collect();
+                graph(buf, Rect { x, y, width, height: 1 }, &data, true);
+            }
+            None => bar(buf, x, y, r.pct, &colours, room(x)),
+        }
         put_right(buf, right.saturating_sub(1), y, &r.value);
     }
 }
@@ -427,6 +438,7 @@ fn cpu_rows(v: &View) -> (Vec<BarRow>, usize) {
         class: class.into(),
         name: String::new(),
         pct: shown,
+        hist: None,
         value: vec![(format!("{:.1} %", raw), value_colour(raw))],
     };
     let mut rows = vec![
@@ -444,6 +456,7 @@ fn cpu_rows(v: &View) -> (Vec<BarRow>, usize) {
             class: "TEMP".into(),
             name: String::new(),
             pct: a.temp_bar.get(v.smooth),
+            hist: None,
             value: vec![(format!("{:.0} / {:.0} °C", t, a.temp_crit_c), TEXT)],
         });
     }
@@ -454,6 +467,7 @@ fn cpu_rows(v: &View) -> (Vec<BarRow>, usize) {
             class: "POWER".into(),
             name: String::new(),
             pct: a.watts_bar.get(v.smooth),
+            hist: None,
             value: vec![(format!("{:.1} / {:.0} W", w, l), TEXT)],
         });
     }
@@ -464,6 +478,7 @@ fn cpu_rows(v: &View) -> (Vec<BarRow>, usize) {
             class: "CLOCK".into(),
             name: String::new(),
             pct: a.freq_bar.get(v.smooth),
+            hist: None,
             value: vec![(format!("{:.0} / {:.0} MHz", fq, max), TEXT)],
         });
     }
@@ -659,6 +674,7 @@ fn mem_rows(v: &View) -> Vec<BarRow> {
             class: "USED".into(),
             name: String::new(),
             pct: a.mem_bars[0].get(v.smooth),
+            hist: None,
             value: pair(m.used(), m.total),
         },
         BarRow {
@@ -667,6 +683,7 @@ fn mem_rows(v: &View) -> Vec<BarRow> {
             class: "CACHE".into(),
             name: String::new(),
             pct: a.mem_bars[1].get(v.smooth),
+            hist: None,
             value: pair(m.cache, m.total),
         },
     ];
@@ -677,6 +694,7 @@ fn mem_rows(v: &View) -> Vec<BarRow> {
             class: "ZFS ARC".into(),
             name: String::new(),
             pct: a.mem_bars[2].get(v.smooth),
+            hist: None,
             value: pair(size, max),
         });
     }
@@ -687,6 +705,7 @@ fn mem_rows(v: &View) -> Vec<BarRow> {
             class: "SWAP".into(),
             name: String::new(),
             pct: a.mem_bars[3].get(v.smooth),
+            hist: None,
             value: pair(m.swap_used(), m.swap_total),
         });
     }
@@ -742,7 +761,8 @@ fn draw_disks(f: &mut Frame, area: Rect, v: &View) {
                 icon_colour: BLUE,
                 class: tail(&d.mount.path, class_w - 1),
                 name: d.mount.fstype.chars().take(6).collect(),
-                pct: d.bar.get(v.smooth),
+                pct: 0.0,
+                hist: Some(d.busy_hist.ring.iter().copied().collect()),
                 value: vec![
                     dim("r "),
                     (format!("{:>6}", fmt_io(d.read_bps)), io(d.read_bps)),
