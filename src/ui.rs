@@ -5,7 +5,7 @@
 //! bar gets its own colour from the ramp — a stock gauge paints one flat colour.
 
 use crate::app::{App, Damped, Disk, Net};
-use crate::config::Boxes;
+use crate::config::{self, Boxes};
 use crate::procs::{self, Proc, Row, SortKey};
 use crate::theme::*;
 use ratatui::prelude::*;
@@ -37,6 +37,8 @@ pub struct View<'a> {
     pub filter: &'a str,
     pub editing: bool,
     pub net: Option<usize>,
+    /// The chosen network graph scale in Mbit/s, before the link-speed cap.
+    pub net_scale: Option<u64>,
     pub popup: Option<Popup<'a>>,
     pub status: Option<(&'a str, bool)>,
     pub kernel_threads: bool,
@@ -798,6 +800,7 @@ fn draw_net(f: &mut Frame, area: Rect, v: &View) {
     let ic = icons(v.icons);
     let net = v.net.and_then(|i| a.nets.get(i));
     let mut title = title_span(ic.net, "network").to_vec();
+    let fixed = net.and_then(|n| config::net_scale_for(v.net_scale, n.speed_mbit));
     if let Some(n) = net {
         title.push(Span::styled(" · ", Style::default().fg(DIM)));
         title.push(Span::styled(n.name.clone(), Style::default().fg(TEXT).add_modifier(Modifier::BOLD)));
@@ -805,8 +808,10 @@ fn draw_net(f: &mut Frame, area: Rect, v: &View) {
             let speed = if s >= 1000 { format!("{} Gbit/s", s as f64 / 1000.0) } else { format!("{} Mbit/s", s) };
             title.push(Span::styled(format!(" · {}", speed), Style::default().fg(DIM)));
         }
+        let scale = fixed.map_or("auto".into(), config::scale_name);
+        title.push(Span::styled(format!(" · scale {}", scale), Style::default().fg(DIM)));
         title.push(Span::styled(
-            format!("  {}/{}  b n ", v.net.unwrap_or(0) + 1, a.nets.len()),
+            format!("  {}/{}  b n m ", v.net.unwrap_or(0) + 1, a.nets.len()),
             Style::default().fg(CHROME),
         ));
     }
@@ -826,8 +831,12 @@ fn draw_net(f: &mut Frame, area: Rect, v: &View) {
     let tx: Vec<f64> = n.tx_hist.last(w).collect();
     // One scale for both halves, so a download and an upload of the same rate
     // are the same height. Floored at 1 KiB/s, or an idle link's background
-    // chatter would fill the graph.
-    let scale = rx.iter().chain(tx.iter()).copied().fold(1024.0, f64::max);
+    // chatter would fill the graph. A fixed scale (m) is in bits, decimal, as
+    // link speeds are; above it the graph is simply full.
+    let scale = match fixed {
+        Some(mbit) => mbit as f64 * 1e6 / 8.0,
+        None => rx.iter().chain(tx.iter()).copied().fold(1024.0, f64::max),
+    };
 
     let half = (inner.height.saturating_sub(2)) / 2;
     let rows = Layout::vertical([
@@ -1271,6 +1280,7 @@ pub fn help_lines(vim: bool) -> Vec<(&'static str, &'static str)> {
         ("", "network"),
         ("n  b", "next / previous interface"),
         ("a", "back to the busiest interface"),
+        ("m", "graph scale: auto, 100M … 100G, up to the link speed"),
     ];
     if vim {
         v.push(("", "vim keys"));

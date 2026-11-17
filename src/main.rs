@@ -571,6 +571,7 @@ fn run_tui(
                 filter: &ui.filter,
                 editing: ui.mode == Mode::Filter,
                 net,
+                net_scale: ui.cfg.net_scale,
                 popup,
                 status: ui.status.as_ref().map(|(s, e, _)| (s.as_str(), *e)),
                 kernel_threads: ui.cfg.kernel_threads,
@@ -855,6 +856,12 @@ fn handle_key(
             let n = app.nets.len().max(1);
             let cur = net.unwrap_or(0);
             ui.net = Some(if k.code == KeyCode::Char('n') { (cur + 1) % n } else { (cur + n - 1) % n });
+        }
+        KeyCode::Char('m') => {
+            let link = net.and_then(|i| app.nets.get(i)).and_then(|n| n.speed_mbit);
+            ui.cfg.net_scale = config::next_net_scale(ui.cfg.net_scale, link);
+            let name = ui.cfg.net_scale.map_or("auto".into(), |s| format!("{}bit/s", config::scale_name(s)));
+            ui.say(format!("network graph scale: {}", name), false);
         }
         KeyCode::Char('a') => {
             ui.net = None;
