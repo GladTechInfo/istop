@@ -1,0 +1,92 @@
+# Publishes each GitHub release to the AUR.
+#
+# On a published release (or by hand, for a given tag) this sets pkgver and the
+# checksum in packaging/aur/PKGBUILD, regenerates .SRCINFO, builds and tests
+# the package in a clean Arch Linux container, runs namcap, and pushes to
+# ssh://aur@aur.archlinux.org/istop.git. A failed build never reaches the AUR.
+#
+# The push needs the repository secret AUR_SSH_KEY: the private half of an SSH
+# key registered on the maintainer's AUR account and used for nothing else.
+# Without it, everything up to the push still runs, so each release is still
+# checked.
+
+name: AUR
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to package, e.g. v0.1.0
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aur
+  cancel-in-progress: false
+
+jobs:
+  aur:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: pacman -Syu --noconfirm --needed rust namcap pacman-contrib git openssh
+
+      # makepkg refuses to run as root.
+      - name: Prepare build user
+        run: |
+          useradd -m builder
+          cp -r packaging/aur /home/builder/pkg
+          chown -R builder: /home/builder/pkg
+
+      - name: Set version and checksum
+        working-directory: /home/builder/pkg
+        run: |
+          ver="${TAG#v}"
+          case "$ver" in ''|*[!0-9.]*) echo "unexpected tag: $TAG" >&2; exit 1;; esac
+          sed -i -e "s/^pkgver=.*/pkgver=$ver/" -e "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          su builder -c 'updpkgsums && makepkg --printsrcinfo > .SRCINFO'
+          cat .SRCINFO
+
+      - name: Build, test and lint
+        working-directory: /home/builder/pkg
+        run: |
+          su builder -c 'makepkg --noconfirm'
+          namcap PKGBUILD
+          namcap ./*.pkg.tar.zst
+
+      - name: Push to the AUR
+        if: env.AUR_SSH_KEY != ''
+        working-directory: /home/builder/pkg
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          # Pinned; fingerprints published at https://aur.archlinux.org/
+          echo 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND='ssh -i ~/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
+          git clone ssh://aur@aur.archlinux.org/istop.git aur
+          cp PKGBUILD .SRCINFO aur/
+          cd aur
+          git config user.name GladTechInfo
+          git config user.email 205174930+GladTechInfo@users.noreply.github.com
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "AUR already up to date"
+            exit 0
+          fi
+          git commit -m "Update to $(sed -n 's/^\tpkgver = //p' .SRCINFO)-$(sed -n 's/^\tpkgrel = //p' .SRCINFO)"
+          git push origin HEAD:master
+
+      - name: Note skipped push
+        if: env.AUR_SSH_KEY == ''
+        run: echo "::notice::AUR_SSH_KEY is not set; the package was built and checked but not pushed."

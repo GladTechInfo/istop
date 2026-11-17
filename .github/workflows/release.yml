@@ -1,0 +1,147 @@
+# Attaches ready-to-run builds to each GitHub release:
+#
+#   istop-<version>-x86_64-linux   static musl binary, any x86-64 Linux
+#   istop_<version>-1_amd64.deb    Debian, Ubuntu, Proxmox
+#   istop-<version>-1.x86_64.rpm   Fedora, RHEL and rebuilds, openSUSE
+#   SHA256SUMS
+#
+# Runs on a published release, or by hand for an existing tag. The tag must
+# match the version in Cargo.toml. Each package is installed and run in a
+# container of the distributions it is for before anything is uploaded.
+
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, e.g. v0.1.0
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check tag against Cargo.toml
+        id: ver
+        run: |
+          ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$ver" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $ver"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install packagers
+        run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.1
+
+      - name: Build
+        run: |
+          ./build.sh
+          cargo deb --target x86_64-unknown-linux-musl --no-build
+          cargo generate-rpm --target x86_64-unknown-linux-musl
+
+      - name: Collect
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          mkdir dist
+          cp target/x86_64-unknown-linux-musl/release/istop "dist/istop-$VER-x86_64-linux"
+          cp target/x86_64-unknown-linux-musl/debian/*.deb dist/
+          cp target/x86_64-unknown-linux-musl/generate-rpm/*.rpm dist/
+          cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # Install, run and remove each package where it would be used. A container
+  # has /proc and /sys, so --once must succeed and report the CPU: that proves
+  # the binary starts, reads the kernel's figures and exits cleanly.
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "debian:12",                     kind: deb }
+          - { image: "debian:13",                     kind: deb }
+          - { image: "ubuntu:22.04",                  kind: deb }
+          - { image: "ubuntu:24.04",                  kind: deb }
+          - { image: "fedora:latest",                 kind: rpm }
+          - { image: "rockylinux:9",                  kind: rpm }
+          - { image: "opensuse/tumbleweed",           kind: rpm }
+          - { image: "alpine:latest",                 kind: bin }
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+
+      - name: Install
+        run: |
+          case "${{ matrix.kind }}" in
+            deb) apt-get update -qq && apt-get install -y ./*.deb ;;
+            rpm) if command -v zypper >/dev/null; then
+                   zypper --non-interactive --no-gpg-checks install --allow-unsigned-rpm ./*.rpm
+                 else
+                   dnf install -y ./*.rpm
+                 fi ;;
+            bin) install -m 0755 istop-*-x86_64-linux /usr/local/bin/istop ;;
+          esac
+
+      - name: Run
+        shell: sh
+        env:
+          VER: ${{ needs.build.outputs.version }}
+        run: |
+          istop --help | head -1
+          [ "$(istop --version)" = "istop $VER" ]
+          out=$(istop --once)
+          echo "$out" | head -30
+          echo "$out" | grep -q '^cpu_busy_pct '
+          echo "$out" | grep -q '^mem_total_b '
+          echo "$out" | grep -q '^proc pid=1 '
+          istop --default-config | head -5
+
+      - name: Remove
+        run: |
+          case "${{ matrix.kind }}" in
+            deb) apt-get remove -y istop ;;
+            rpm) if command -v zypper >/dev/null; then zypper --non-interactive remove istop; else dnf remove -y istop; fi ;;
+            bin) rm /usr/local/bin/istop ;;
+          esac
+          ! command -v istop
+
+  upload:
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+      - run: gh release upload "$TAG" ./* --clobber -R "$GITHUB_REPOSITORY"

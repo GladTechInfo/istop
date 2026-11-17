@@ -1,0 +1,46 @@
+# Maintainer: GladTechInfo <205174930+GladTechInfo@users.noreply.github.com>
+#
+# Source of truth for the AUR package. The release workflow
+# (.github/workflows/aur.yml) sets pkgver and the checksum from each GitHub
+# release and pushes this file with its .SRCINFO to the AUR, so pkgver here
+# may lag the latest release; the AUR copy is always current.
+
+pkgname=istop
+pkgver=0.3.1
+pkgrel=1
+pkgdesc='Terminal system monitor: CPU, memory, disks, ZFS pools, network and processes, with per-container attribution'
+arch=('x86_64')
+url='https://github.com/GladTechInfo/istop'
+license=('GPL-3.0-or-later')
+depends=('libgcc' 'glibc')
+makedepends=('cargo')
+# The release profile strips the binary, so a -debug package would be empty.
+options=('!debug')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')  # set from the v$pkgver tag when it exists; the AUR workflow fills it in
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm0755 -t "$pkgdir/usr/bin/" target/release/istop
+  install -Dm0644 -t "$pkgdir/usr/share/doc/$pkgname/" README.md
+}

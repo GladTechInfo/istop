@@ -308,7 +308,9 @@ real difference on this estate (Proxmox hosts, a laptop, ZFS).
 | Pause process list (`u`) | **adopted** | |
 | Per-core vs machine CPU (`c`) | **adopted** | istop defaults to per-thread like top; `c` switches |
 | Box toggles (`1`–`4`) | **adopted** | presets reduce to this in practice |
-| Previous interface (`b`) | **adopted**; `a` returns to automatic | `a` means auto-scale in btop; istop's scale is always automatic |
+| Previous interface (`b`) | **adopted**; `a` returns to automatic | `a` means auto-scale in btop; istop's scale is on `m` |
+| Network scale: auto or fixed (`net_auto`, `net_download`/`net_upload`) | **adopted, extended** (`m`, `net_scale`; 0.3.0) | default is the port's link speed, so height shows how much of the link is in use; fixed steps stop below the link speed |
+| Disk filter (`disks_filter`), show/hide disks | **adopted, extended** (`d` menu, `disk_order`/`disk_hidden`; 0.2.0) | choose and order rows interactively; a new mount is never hidden silently |
 | Mouse: select, scroll, click to open | **adopted** | |
 | Help overlay (`?`, F1) | **adopted** | replaces the long hint line |
 | Clock in header | **adopted** | local time from `/etc/localtime`, parsed in Rust |
@@ -324,7 +326,7 @@ real difference on this estate (Proxmox hosts, a laptop, ZFS).
 | Regex filter (`!`) | not adopted | needs a regex engine dependency; substring filter covers the use |
 | Themes, presets, options menu | not adopted | the design is fixed to igtop's on purpose; the config file covers options |
 | Braille graphs | not adopted | eighth blocks give 8 levels per cell and match igtop; braille's extra horizontal resolution matters little at 1 s columns |
-| IO mode with big disk graphs | not adopted | busy % and rates answer the usual question |
+| IO mode with big disk graphs | not adopted; each disk row is a busy % history instead (0.2.1) | busy % and rates answer the usual question |
 | GPU boxes | not adopted | igtop is the GPU monitor, and is more accurate on i915 than btop's |
 | Per-core temperatures and core map | not adopted (yet) | needs topology mapping; package temperature answers the common question |
 | Process following (`F`) | covered | istop's selection follows its process once moved; `Home` returns to the top row |

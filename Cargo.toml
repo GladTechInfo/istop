@@ -15,6 +15,32 @@ crossterm = "=0.28.1"
 # System calls made directly in Rust (no C library bindings in istop itself).
 rustix = { version = "0.38.44", features = ["fs", "process", "param"] }
 
+# Debian and Ubuntu package (`cargo deb`). Release builds package the static
+# musl binary, so the package has no library dependencies.
+[package.metadata.deb]
+maintainer = "GladTechInfo <205174930+GladTechInfo@users.noreply.github.com>"
+copyright = "GladTechInfo"
+section = "utils"
+priority = "optional"
+extended-description = """\
+Terminal system monitor: CPU (per thread, temperature, package power, clock), \
+memory and the ZFS ARC, local disks and ZFS pools (space, I/O rates, busy \
+time), network graphs scaled to the link speed, and a sortable, filterable \
+process list or tree that names the Proxmox CT or VM, Docker or Podman \
+container each process runs in. Static binary; no library dependencies."""
+assets = [
+    ["target/release/istop", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/istop/README.md", "644"],
+]
+
+# Fedora, RHEL and openSUSE package (`cargo generate-rpm`).
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/istop", dest = "/usr/bin/istop", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/istop/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/istop/LICENSE", mode = "644", doc = true },
+]
+
 [profile.release]
 opt-level = 3
 lto = true
