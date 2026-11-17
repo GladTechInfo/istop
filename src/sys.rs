@@ -483,16 +483,18 @@ pub fn parse_zfs_list(s: &str) -> Vec<(String, u64, u64)> {
 }
 
 /// `zpool list -vHP -o name`: a pool name at the margin, then its vdevs
-/// indented, member devices as full paths.
+/// indented, member devices as full paths. OpenZFS 2.3 ignores `-o` on the
+/// vdev lines and prints every column after the name, so only the first
+/// tab-separated field is the name.
 pub fn parse_zpool_members(s: &str) -> HashMap<String, Vec<String>> {
     let mut out: HashMap<String, Vec<String>> = HashMap::new();
     let mut pool = String::new();
     for line in s.lines() {
         if !line.starts_with('\t') && !line.starts_with(' ') {
-            pool = line.trim().to_string();
+            pool = line.split('\t').next().unwrap_or("").trim().to_string();
             continue;
         }
-        let dev = line.trim();
+        let dev = line.trim_start().split('\t').next().unwrap_or("").trim();
         if dev.starts_with("/dev/") {
             out.entry(pool.clone()).or_default().push(dev.to_string());
         }
@@ -661,6 +663,9 @@ mod tests {
         );
         assert_eq!(m["fast"].len(), 2);
         assert_eq!(m["rpool"], vec!["/dev/sda3".to_string()]);
+        // OpenZFS 2.3 prints every column on vdev lines despite `-o name`.
+        let m = parse_zpool_members("tank\n\tmirror-0\t3.75G\t1.5G\t-\tONLINE\n\t/dev/sdb1\t4G\t-\t-\tONLINE\n");
+        assert_eq!(m["tank"], vec!["/dev/sdb1".to_string()]);
     }
 
     #[test]
