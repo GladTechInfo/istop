@@ -39,6 +39,7 @@ OPTIONS:
     -r, --reverse         reverse the sort
     -f, --filter <TEXT>   initial process filter
         --tree            start in tree view
+        --guests          Proxmox VMs and containers first, one row each
     -c, --config <FILE>   config file (default ~/.config/istop/istop.conf)
         --default-config  print the default config and exit
         --once            print a single plain-text snapshot and exit
@@ -50,7 +51,7 @@ OPTIONS:
     -h, --help            this text
 
 Settings come from the config file, then these options. Press ? in istop
-for the keys, and W to save the current settings to the config file.
+for the keys, and Shift+W to save the current settings to the config file.
 
 CPU:
     Busy is everything but idle and iowait. iowait is idle time with I/O
@@ -64,6 +65,9 @@ PROCESSES:
     Processes are rescanned once a second at most. WHERE is read from each
     process's cgroup: CT n and VM n on Proxmox, docker, podman, or host.
     TIME is CPU time used since the process started.
+    `v` lists each Proxmox VM and container first, as one row with its
+    processes added together (memory is the sum of their RSS); Enter on one
+    lists its processes beneath it. `o` changes the guests' order.
 
 DISKS:
     Local filesystems only, one row per device; network filesystems are left
@@ -86,6 +90,7 @@ struct Args {
     reverse: bool,
     filter: String,
     tree: bool,
+    guests: bool,
     config: Option<PathBuf>,
     default_config: bool,
     once: bool,
@@ -119,6 +124,7 @@ fn parse_args() -> Result<Args, String> {
             "-r" | "--reverse" => a.reverse = true,
             "-f" | "--filter" => a.filter = it.next().ok_or("--filter needs a value")?,
             "--tree" => a.tree = true,
+            "--guests" => a.guests = true,
             "-c" | "--config" => a.config = Some(PathBuf::from(it.next().ok_or("--config needs a file")?)),
             "--default-config" => a.default_config = true,
             "--once" => a.once = true,
@@ -153,6 +159,7 @@ fn settle(mut c: Config, a: &Args) -> Config {
     }
     c.reverse ^= a.reverse;
     c.tree |= a.tree;
+    c.guests |= a.guests;
     c.smooth &= !a.no_smooth;
     c.icons &= !a.no_icons;
     if let Some(v) = a.damping {
@@ -316,9 +323,30 @@ fn snapshot(app: &mut app::App, cfg: &Config, filter: &str) {
         );
     }
     let desc = cfg.sort.default_desc() ^ cfg.reverse;
-    let rows = procs::flat(&app.procs.list, |p| procs::matches(p, filter), cfg.sort, desc);
+    let keep = |p: &Proc| procs::matches(p, filter);
+    if cfg.guests {
+        let none = HashSet::new();
+        let list = &app.procs.list;
+        for r in procs::guests(list, keep, filter, cfg.guest_order, &app.procs.guest_names, cfg.sort, desc, &none) {
+            let p = &*r.p;
+            let _ = writeln!(
+                o,
+                "guest where={} name={} procs={} threads={} time_s={:.2} cpu={:.1}% rss_b={} mem={:.1}%",
+                quote(p.container.as_deref().unwrap_or("")),
+                quote(&p.comm),
+                r.children,
+                p.threads,
+                p.cpu_time_s,
+                p.cpu_pct,
+                p.rss,
+                p.mem_pct
+            );
+        }
+    }
+    let host = |p: &Proc| !(cfg.guests && procs::in_guest(p)) && keep(p);
+    let rows = procs::flat(&app.procs.list, host, cfg.sort, desc);
     for r in rows.iter().take(25) {
-        let p = r.p;
+        let p = &*r.p;
         let _ = writeln!(
             o,
             "proc pid={} ppid={} where={} user={} comm={} nice={} threads={} time_s={:.2} cpu={:.1}% rss_b={} mem={:.1}%",
@@ -368,6 +396,8 @@ struct Ui {
     selected: usize,
     offset: usize,
     collapsed: HashSet<i32>,
+    /// Guest rows listing their processes beneath them, by the row's PID.
+    open_guests: HashSet<i32>,
     list_paused: bool,
     /// Chosen with n / b; `None` follows the busiest interface.
     net: Option<usize>,
@@ -388,14 +418,25 @@ impl Ui {
     }
 }
 
-fn rows<'a>(list: &'a [Proc], ui: &Ui) -> Vec<Row<'a>> {
+fn rows<'a>(ps: &'a procs::Procs, ui: &Ui) -> Vec<Row<'a>> {
+    let list = &ps.list;
     let kt = ui.cfg.kernel_threads;
     let keep = |p: &Proc| (kt || !p.kernel) && procs::matches(p, &ui.filter);
-    if ui.cfg.tree {
-        procs::tree(list, keep, ui.cfg.sort, ui.desc, &ui.collapsed)
+    // With guests first, the rest are the host's own processes.
+    let grouped = ui.cfg.guests;
+    let host = |p: &Proc| !(grouped && procs::in_guest(p)) && keep(p);
+    let mut out = if grouped {
+        let c = &ui.cfg;
+        procs::guests(list, keep, &ui.filter, c.guest_order, &ps.guest_names, c.sort, ui.desc, &ui.open_guests)
     } else {
-        procs::flat(list, keep, ui.cfg.sort, ui.desc)
-    }
+        Vec::new()
+    };
+    out.extend(if ui.cfg.tree {
+        procs::tree(list, host, ui.cfg.sort, ui.desc, &ui.collapsed)
+    } else {
+        procs::flat(list, host, ui.cfg.sort, ui.desc)
+    });
+    out
 }
 
 type Term = ratatui::DefaultTerminal;
@@ -434,6 +475,7 @@ fn run_tui(
         selected: 0,
         offset: 0,
         collapsed: HashSet::new(),
+        open_guests: HashSet::new(),
         list_paused: false,
         net: None,
         status: None,
@@ -511,7 +553,7 @@ fn run_tui(
         if dirty || (moving && sig != last_sig) {
             last_sig = sig;
             dirty = false;
-            let list = rows(&app.procs.list, &ui);
+            let list = rows(&app.procs, &ui);
             if let Some(pid) = ui.selected_pid.filter(|_| ui.follow) {
                 if let Some(i) = list.iter().position(|r| r.p.pid == pid) {
                     ui.selected = i;
@@ -567,6 +609,7 @@ fn run_tui(
                 sort: ui.cfg.sort,
                 desc: ui.desc,
                 tree: ui.cfg.tree,
+                guests: ui.cfg.guests,
                 per_core: ui.cfg.per_core,
                 filter: &ui.filter,
                 editing: ui.mode == Mode::Filter,
@@ -670,6 +713,13 @@ enum Flow {
 }
 
 fn toggle_detail(ui: &mut Ui, app: &mut app::App) {
+    if let Some(g) = ui.selected_pid.filter(|p| *p < 0) {
+        if !ui.open_guests.remove(&g) {
+            ui.open_guests.insert(g);
+        }
+        ui.follow = true;
+        return;
+    }
     match (app.detail.as_ref().map(|d| d.pid), ui.selected_pid) {
         (Some(d), Some(s)) if d == s => app.detail = None,
         (_, Some(s)) => app.open_detail(s),
@@ -838,9 +888,20 @@ fn handle_key(
                 ui.follow = true;
             }
         }
+        KeyCode::Char('v') => {
+            ui.cfg.guests = !ui.cfg.guests;
+            ui.follow = ui.selected > 0;
+        }
+        KeyCode::Char('o') if ui.cfg.guests => {
+            ui.cfg.guest_order = ui.cfg.guest_order.next();
+            ui.say(format!("guest order: {}", ui.cfg.guest_order.name()), false);
+        }
         KeyCode::Char('u') => ui.list_paused = !ui.list_paused,
         KeyCode::Char('c') => ui.cfg.per_core = !ui.cfg.per_core,
         KeyCode::Char('t') => ui.cfg.kernel_threads = !ui.cfg.kernel_threads,
+        KeyCode::Char(c) if (c == signal_key || c == 'N') && ui.selected_pid.is_some_and(|p| p < 0) => {
+            ui.say("a guest row is all its processes: Enter lists them, then choose one", true);
+        }
         KeyCode::Char(c) if c == signal_key => {
             if let Some(pid) = ui.selected_pid {
                 ui.mode = Mode::Signal(pid);
@@ -935,7 +996,7 @@ fn step_sort(ui: &mut Ui, by: isize) {
     ui.desc = ui.cfg.sort.default_desc();
 }
 
-/// `W`: the current settings, written to the config file on request only.
+/// `W` (Shift+W): the current settings, written to the config file on request only.
 fn save(ui: &mut Ui) {
     let mut c = ui.cfg.clone();
     c.reverse = ui.desc != c.sort.default_desc();

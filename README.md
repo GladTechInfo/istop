@@ -53,7 +53,7 @@ questions that matter on one:
 | How full is the pool? | ZFS pools are shown once each, with space as `zfs list` counts it and I/O from the member disks. |
 | How much of the 10 Gbit/s port is in use? | The network graph's full height is the port's link speed by default. |
 
-istop also never writes its configuration file unless you press `W`, so trying a setting never
+istop also never writes its configuration file unless you press `W` (`Shift`+`W`), so trying a setting never
 changes your defaults by accident.
 
 ### Who it is for
@@ -75,9 +75,9 @@ changes your defaults by accident.
 | **Disks** | Local filesystems and ZFS pools: space, read and write rates, and a history of how busy each device is. A menu (`d`) chooses which are shown and in what order. |
 | **Network** | Receive and send graphs for one interface, scaled to the link speed, automatically, or to a fixed rate. Follows the busiest physical port unless you choose one. |
 | **Processes** | Flat list or tree; sort by any column; filter; a detail box with CPU history, disk I/O, cgroup and command line; signals and renice; mouse support. |
-| **Containers** | Proxmox CT and VM, Docker and Podman labels on every process; container users by name. |
+| **Containers** | Proxmox CT and VM, Docker and Podman labels on every process; container users by name. On Proxmox VE, a guests view (`v`) lists each VM and container as one row, its processes added together, in VMID order. |
 | **Header** | Host name, clock, uptime, battery, and the container istop itself runs in. |
-| **Configuration** | Optional `key = value` file, written only when you press `W`. |
+| **Configuration** | Optional `key = value` file, written only when you press `W` (`Shift`+`W`). |
 | **Scripting** | `--once` prints every figure as plain text. |
 | **Small and safe** | One static binary with no dependencies; written in Rust with `#![forbid(unsafe_code)]`. |
 
@@ -317,7 +317,7 @@ static binary that runs on other machines, see [Static builds](#static-builds).
 | `makepkg` (Arch, CachyOS) | `sudo pacman -R istop` |
 | Static binary or source build | `sudo rm /usr/local/bin/istop`, and delete the cloned directory if you have one. |
 
-The only file istop ever writes is its configuration file, and only when you press `W`. To remove
+The only file istop ever writes is its configuration file, and only when you press `W` (`Shift`+`W`). To remove
 it too: `rm -r ~/.config/istop`.
 
 ---
@@ -368,6 +368,9 @@ processes. Press `?` at any time for the list of keys, and `q` to quit. A larger
    list. `Enter` again or `Esc` closes it.
 5. **Act** with `k` for the signal menu or `N` to renice. Both ask for confirmation through their
    own menu, and `Esc` cancels.
+6. **Per guest** on Proxmox VE: `v` lists every VM and container first, one row each with its
+   processes added together, so each guest's CPU and memory can be read at a glance. `Enter` on a
+   guest row lists its processes beneath it; `o` changes the guests' order.
 
 ![Filter typed in the process box title](docs/images/istop-filter.png)
 
@@ -408,7 +411,7 @@ Press `?` or `F1` in istop for this list. Help closes on any key.
 | `d` | Disks menu | Choose which disks and pools are shown, and in what order. See [Disks menu](#disks-menu). |
 | `s` | Damping on or off | Damped bars (rise fast, fall slowly) or raw bars. |
 | `i` | Icons or ASCII | Nerd Font glyphs or plain ASCII letters. |
-| `W` | Save settings | Writes the current settings to the configuration file. Nothing is saved otherwise. |
+| `W` (`Shift`+`W`) | Save settings | Writes the current settings to the configuration file. Nothing is saved otherwise. |
 | `Ctrl+Z` | Suspend | Returns you to the shell; `fg` resumes istop. |
 
 ![istop with the CPU box hidden](docs/images/istop-cpu-box-hidden.png)
@@ -433,6 +436,8 @@ back.*
 | `Enter` | Detail box | Opens or closes the detail box for the selected process. Needs a process box at least 14 rows high. |
 | `e` | Tree view | Switches between the flat list and the tree. |
 | `E` | Fold or unfold all | In tree view: folds every branch, or unfolds them all if any are folded. |
+| `v` | Guests first | On Proxmox VE: one row per VM and container, its processes added together, above the host's own processes (title: **guests first**). `Enter` on a guest row lists or hides its processes. Signals and renice act on single processes only. |
+| `o` | Guest order | With guests first: by VMID alone, VMs and containers mixed (`vmid`); VMs then containers (`vm-first`); or containers then VMs (`ct-first`, the Proxmox tree's default), each type in VMID order. |
 | `u` | Pause the list | Freezes the process list (title: **list paused**) while the rest keeps updating, so rows stop moving while you read or select. |
 | `c` | CPU % basis | Switches between a share of **one thread** (as `top`: four busy threads read 400) and a share of the **whole machine**. The process box title says which. |
 | `t` | Kernel threads | Shows or hides kernel threads. |
@@ -481,7 +486,7 @@ priority), from −20 (highest) to 19 (lowest); `Enter` applies it and any other
 | `Space`, `Enter` | Show or hide the selected disk or pool. |
 | `Shift+↑` `Shift+↓`, `+` `-` | Move the selected row up or down. |
 | `r` | Default order, everything shown. |
-| `W` | Save the choice to the configuration file. |
+| `W` (`Shift`+`W`) | Save the choice to the configuration file. |
 | `Esc`, `d`, `q` | Close the menu. |
 
 ### Mouse
@@ -604,7 +609,7 @@ speed (bridges, most virtual NICs) are drawn automatically under `link`.
 | **PID** | Process ID. |
 | **WHERE** | `CT n` or `VM n` on Proxmox VE, `docker`, `podman`, or `host`. |
 | **USER** | The owner; inside an unprivileged container, the name from that container's own user list. |
-| **PROCESS** | The program name, followed by its arguments in a dimmer colour. In tree view, branches are drawn with `├─` and `└─`; an unfolded parent is marked `-`, and a folded one `+N` (in amber, with N its number of children) — its row then shows the totals of the whole branch. |
+| **PROCESS** | The program name, followed by its arguments in a dimmer colour. In tree view, branches are drawn with `├─` and `└─`; an unfolded parent is marked `-`, and a folded one `+N` (in amber, with N its number of children) — its row then shows the totals of the whole branch. With guests first (`v`), a guest row shows the guest's name in blue, marked `+N` with N its number of processes; PID, USER and NI are blank, and the figures are the sums of all its processes, whatever the filter. |
 | **NI** | Nice value: −20 (highest priority) to 19 (lowest). |
 | **THR** | Number of threads. |
 | **TIME** | CPU time used since the process started (minutes:seconds.hundredths). |
@@ -665,6 +670,7 @@ on this 22-thread machine instead of 400 %.*
 | `-r`, `--reverse` | Reverse the sort. | |
 | `-f`, `--filter <TEXT>` | Initial process filter. | |
 | `--tree` | Start in tree view. | |
+| `--guests` | Start with Proxmox VMs and containers first, one row each. | |
 | `-c`, `--config <FILE>` | Configuration file. | `~/.config/istop/istop.conf` |
 | `--default-config` | Print the default configuration, with descriptions, and exit. | |
 | `--once` | Print one plain-text snapshot and exit. | |
@@ -693,6 +699,8 @@ mkdir -p ~/.config/istop && istop --default-config > ~/.config/istop/istop.conf
 | `sort` | `pid` `where` `user` `name` `nice` `threads` `time` `cpu` `mem` | `cpu` | Process sort column. |
 | `reverse` | `true`, `false` | `false` | Sort the opposite way. |
 | `tree` | `true`, `false` | `false` | Start in tree view. |
+| `guests` | `true`, `false` | `false` | Proxmox VMs and containers first, one row each. |
+| `guest_order` | `vmid`, `vm-first`, `ct-first` | `vmid` | Order of the guest rows: by VMID, or each type by VMID. |
 | `per_core` | `true`, `false` | `true` | CPU % of one thread (`true`) or of the machine. |
 | `kernel_threads` | `true`, `false` | `true` | List kernel threads. |
 | `smooth` | `true`, `false` | `true` | Damped bars. |
@@ -708,7 +716,7 @@ mkdir -p ~/.config/istop && istop --default-config > ~/.config/istop/istop.conf
 | `disk_order` | mount points or pool names, comma-separated | empty | These first, in this order; any other follows. |
 | `disk_hidden` | mount points or pool names, comma-separated | empty | Never shown. |
 
-The file is written **only when you press `W`**, so experimenting never changes it. A disk listed in
+The file is written **only when you press `W` (`Shift`+`W`)**, so experimenting never changes it. A disk listed in
 neither `disk_order` nor `disk_hidden` appears after the ordered ones, so a new mount is never lost
 silently. If a line is invalid, istop reports it with its line number and applies the rest.
 
@@ -766,6 +774,9 @@ proc pid=3 ppid=1 where=host user=root comm=istop nice=0 threads=1 time_s=0.00 c
 
 - The process lines are the first 25 in the current sort, after any `-f` filter, so
   `istop --once -s mem` lists the 25 largest.
+- With `--guests` (or `guests = true`), every Proxmox guest comes first as a `guest` line —
+  `where`, `name`, `procs`, `threads`, `time_s`, `cpu`, `rss_b`, `mem`, its processes added
+  together — and the `proc` lines are the host's own processes.
 - `--once` reports every disk, including those hidden in the configuration.
 - A value containing spaces, quotes or control characters is double-quoted with `\\`, `\"` and
   `\xNN` escapes, as in `where="CT 101"`. Process names are set by whatever runs in a container, so
@@ -854,6 +865,11 @@ second at most, whatever the sampling interval.
 container, `qemu.slice/<id>.scope` a Proxmox VM's QEMU process, and `docker`/`libpod` paths Docker
 and Podman. **USER** inside an unprivileged container is resolved by mapping the UID back through the
 process's `uid_map` and looking it up in the container's own `/etc/passwd`.
+
+With guests first, a guest's name comes from its configuration in `/etc/pve` (`name` for a VM,
+`hostname` for a container; root only), else from QEMU's `-name` argument. Its memory is the sum of
+its processes' resident memory, so pages shared between a container's processes count more than once;
+it is not the guest's cgroup total, which also counts page cache.
 
 ### Damping
 

@@ -33,6 +33,7 @@ pub struct View<'a> {
     pub sort: SortKey,
     pub desc: bool,
     pub tree: bool,
+    pub guests: bool,
     pub per_core: bool,
     pub filter: &'a str,
     pub editing: bool,
@@ -907,6 +908,9 @@ fn draw_procs(f: &mut Frame, area: Rect, v: &View) -> Hit {
     let ic = icons(v.icons);
     let mut title = title_span(ic.procs, "processes").to_vec();
     title.push(Span::styled(format!(" · {} ", v.rows.len()), Style::default().fg(DIM)));
+    if v.guests {
+        title.push(Span::styled("· guests first ", Style::default().fg(TITLE)));
+    }
     if v.tree {
         title.push(Span::styled("· tree ", Style::default().fg(TITLE)));
     }
@@ -970,7 +974,7 @@ fn draw_procs(f: &mut Frame, area: Rect, v: &View) -> Hit {
     let colours = ramp_cells(CPU_BAR);
     let threads = v.app.threads.max(1) as f64;
     for (row, r) in v.rows.iter().skip(v.offset).take(page).enumerate() {
-        let p = r.p;
+        let p = &*r.p;
         let y = inner.y + 1 + row as u16;
         let selected = v.offset + row == v.selected;
         if selected {
@@ -987,7 +991,10 @@ fn draw_procs(f: &mut Frame, area: Rect, v: &View) -> Hit {
             p.mem_pct
         };
 
-        put(buf, xs[0], y, widths[0], &right(0, p.pid.to_string()), Style::default().fg(DIM));
+        // A guest row has no PID, owner or nice value of its own.
+        if !r.guest {
+            put(buf, xs[0], y, widths[0], &right(0, p.pid.to_string()), Style::default().fg(DIM));
+        }
         put(
             buf,
             xs[1],
@@ -997,7 +1004,9 @@ fn draw_procs(f: &mut Frame, area: Rect, v: &View) -> Hit {
             Style::default().fg(if p.container.is_some() { BLUE } else { DIM }),
         );
         let user_colour = if p.user == "root" { AMBER } else { LABEL };
-        put(buf, xs[2], y, widths[2], &p.user, Style::default().fg(user_colour));
+        if !r.guest {
+            put(buf, xs[2], y, widths[2], &p.user, Style::default().fg(user_colour));
+        }
 
         // Tree connectors, a fold marker, then the name in full colour and
         // the arguments dimmed after it; kernel threads in brackets, as ps
@@ -1007,12 +1016,14 @@ fn draw_procs(f: &mut Frame, area: Rect, v: &View) -> Hit {
         if !r.prefix.is_empty() {
             x = put(buf, x, y, (end - x) as usize, &r.prefix, Style::default().fg(TRACK));
         }
-        if v.tree && r.children > 0 {
+        if (v.tree || r.guest) && r.children > 0 {
             let mark = if r.collapsed { format!("+{} ", r.children) } else { "- ".into() };
             x = put(buf, x, y, (end - x) as usize, &mark, Style::default().fg(if r.collapsed { AMBER } else { CHROME }));
         }
         let name = if p.kernel { format!("[{}]", p.comm) } else { p.comm.clone() };
-        let name_colour = if p.kernel {
+        let name_colour = if r.guest {
+            BLUE
+        } else if p.kernel {
             DIM
         } else {
             match p.state {
@@ -1032,7 +1043,9 @@ fn draw_procs(f: &mut Frame, area: Rect, v: &View) -> Hit {
             n if n > 0 => BLUE,
             _ => DIM,
         };
-        put(buf, xs[4], y, widths[4], &right(4, p.nice.to_string()), Style::default().fg(ni_colour));
+        if !r.guest {
+            put(buf, xs[4], y, widths[4], &right(4, p.nice.to_string()), Style::default().fg(ni_colour));
+        }
         put(buf, xs[5], y, widths[5], &right(5, p.threads.to_string()), Style::default().fg(DIM));
         put(buf, xs[6], y, widths[6], &right(6, cpu_time(p.cpu_time_s)), Style::default().fg(DIM));
 
@@ -1245,7 +1258,7 @@ fn draw_disk_menu(f: &mut Frame, area: Rect, items: &[(String, String, bool)], c
         Style::default().fg(DIM),
     )));
     lines.push(Line::from(Span::styled(
-        "  r  default order, all shown    Esc d q  close    W  save",
+        "  r  default order, all shown    Esc d q  close    Shift+W  save",
         Style::default().fg(DIM),
     )));
     f.render_widget(Paragraph::new(lines), inner);
@@ -1263,7 +1276,7 @@ pub fn help_lines(vim: bool) -> Vec<(&'static str, &'static str)> {
         ("d", "disks menu: choose and order the disks shown"),
         ("s", "damped or raw bars"),
         ("i", "Nerd Font icons or ASCII"),
-        ("W", "save current settings to the config file"),
+        ("Shift+W", "save current settings to the config file"),
         ("Ctrl+Z", "suspend"),
         ("", "processes"),
         ("↑ ↓ PgUp PgDn", "select"),
@@ -1275,6 +1288,9 @@ pub fn help_lines(vim: bool) -> Vec<(&'static str, &'static str)> {
         ("e", "tree view"),
         ("space + -", "in the tree: fold / unfold the selected branch"),
         ("E", "fold / unfold every branch"),
+        ("v", "VMs and containers first, one row each (Proxmox)"),
+        ("Enter", "on a guest row: list / hide its processes"),
+        ("o", "guest order: by VMID, VMs first, containers first"),
         ("u", "pause the process list"),
         ("c", "cpu % of one thread or of the machine"),
         ("t", "show or hide kernel threads"),

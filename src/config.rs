@@ -3,10 +3,10 @@
 //! Read at start-up from `$XDG_CONFIG_HOME/istop/istop.conf` (else
 //! `~/.config/istop/istop.conf`), or the file given with `-c`. Command-line
 //! options override it. Unlike btop, nothing is written back on exit: a key
-//! pressed once does not silently become the new default. `W` saves the
+//! pressed once does not silently become the new default. `W` (Shift+W) saves the
 //! current settings on purpose.
 
-use crate::procs::SortKey;
+use crate::procs::{GuestOrder, SortKey};
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
@@ -16,6 +16,10 @@ pub struct Config {
     /// Sort the opposite way to the key's natural order.
     pub reverse: bool,
     pub tree: bool,
+    /// Proxmox VMs and containers first, one row each, their processes added
+    /// together.
+    pub guests: bool,
+    pub guest_order: GuestOrder,
     /// Process CPU as a share of one thread (top) rather than of the machine.
     pub per_core: bool,
     pub kernel_threads: bool,
@@ -88,6 +92,8 @@ impl Default for Config {
             sort: SortKey::Cpu,
             reverse: false,
             tree: false,
+            guests: false,
+            guest_order: GuestOrder::Vmid,
             per_core: true,
             kernel_threads: true,
             smooth: true,
@@ -224,6 +230,11 @@ impl Config {
                     "sort" => c.sort = SortKey::parse(v).ok_or(format!("unknown sort key \"{}\"", v))?,
                     "reverse" => c.reverse = parse_bool(v)?,
                     "tree" => c.tree = parse_bool(v)?,
+                    "guests" => c.guests = parse_bool(v)?,
+                    "guest_order" => {
+                        c.guest_order =
+                            GuestOrder::parse(v).ok_or(format!("\"{}\" is not vm-first ct-first vmid", v))?
+                    }
                     "per_core" => c.per_core = parse_bool(v)?,
                     "kernel_threads" => c.kernel_threads = parse_bool(v)?,
                     "smooth" => c.smooth = parse_bool(v)?,
@@ -277,7 +288,7 @@ impl Config {
         format!(
             "\
 # istop configuration. `key = value`; `#` starts a comment.
-# Command-line options override these. Saved only when W is pressed.
+# Command-line options override these. Saved only when W (Shift+W) is pressed.
 
 # Sampling interval in milliseconds, 100-10000.
 update_ms = {}
@@ -288,6 +299,11 @@ sort = {}
 reverse = {}
 # Show processes as a tree.
 tree = {}
+# Proxmox VMs and containers first, one row each with its processes added together.
+guests = {}
+# Guest rows: vmid (by VMID, VMs and containers mixed), or each type by VMID:
+# vm-first, ct-first (the Proxmox tree's default).
+guest_order = {}
 # Process CPU % of one thread, as top shows it (true), or of the whole machine (false).
 per_core = {}
 # List kernel threads.
@@ -327,6 +343,8 @@ disk_hidden = {}
             self.sort.name(),
             self.reverse,
             self.tree,
+            self.guests,
+            self.guest_order.name(),
             self.per_core,
             self.kernel_threads,
             self.smooth,

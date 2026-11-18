@@ -10,6 +10,7 @@
 //! mistaken for the process that had it before.
 
 use rustix::process::{Pid, Signal};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -55,6 +56,8 @@ pub struct Procs {
     users: HashMap<u32, String>,
     /// Each container's own users, read from inside it once.
     guest_users: HashMap<String, HashMap<u32, String>>,
+    /// Each Proxmox guest's name, read once while it has processes running.
+    pub guest_names: HashMap<String, Option<String>>,
     passwd_mtime: Option<std::time::SystemTime>,
     last: Option<Instant>,
     pub clk_tck: f64,
@@ -75,6 +78,7 @@ impl Procs {
             cache: HashMap::new(),
             users: read_passwd("/etc/passwd"),
             guest_users: HashMap::new(),
+            guest_names: HashMap::new(),
             passwd_mtime: passwd_mtime(),
             last: None,
             clk_tck: if clk_tck > 0 { clk_tck as f64 } else { 100.0 },
@@ -158,6 +162,14 @@ impl Procs {
             });
         }
         self.cache.retain(|pid, _| prev.contains_key(pid));
+        // Read again after the guest stops, so a rename shows on its restart.
+        let running: HashSet<&str> = list.iter().filter_map(|p| p.container.as_deref()).collect();
+        self.guest_names.retain(|g, _| running.contains(g.as_str()));
+        for g in running {
+            if guest_of(g).is_some() && !self.guest_names.contains_key(g) {
+                self.guest_names.insert(g.to_string(), read_guest_name(g));
+            }
+        }
         self.prev = prev;
         self.list = list;
     }
@@ -438,19 +450,195 @@ pub fn matches(p: &Proc, needle: &str) -> bool {
 
 /// One line of the process table.
 pub struct Row<'a> {
-    pub p: &'a Proc,
+    /// A process from the list, or for a guest row one made up of the
+    /// guest's processes added together.
+    pub p: Cow<'a, Proc>,
     /// Tree connectors drawn before the name; empty in the flat list.
     pub prefix: String,
     pub children: usize,
     pub collapsed: bool,
     /// A collapsed node's whole subtree, itself included: CPU and memory.
     pub sub: Option<(f64, u64)>,
+    /// A whole VM or container, not one process.
+    pub guest: bool,
+}
+
+impl<'a> Row<'a> {
+    fn of(p: &'a Proc) -> Self {
+        Row { p: Cow::Borrowed(p), prefix: String::new(), children: 0, collapsed: false, sub: None, guest: false }
+    }
 }
 
 pub fn flat<'a>(list: &'a [Proc], keep: impl Fn(&Proc) -> bool, key: SortKey, desc: bool) -> Vec<Row<'a>> {
     let mut v: Vec<&Proc> = list.iter().filter(|p| keep(p)).collect();
     v.sort_by(|a, b| compare(a, b, key, desc));
-    v.into_iter().map(|p| Row { p, prefix: String::new(), children: 0, collapsed: false, sub: None }).collect()
+    v.into_iter().map(Row::of).collect()
+}
+
+// ─────────────────────────── guest rows ───────────────────────────
+
+/// The order of the guest rows. Within a type, by VMID, as Proxmox's
+/// resource tree sorts them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestOrder {
+    /// By VMID alone, VMs and containers mixed.
+    Vmid,
+    /// VMs, then containers.
+    VmFirst,
+    /// Containers, then VMs: the Proxmox tree's default ("Group Guest Types").
+    CtFirst,
+}
+
+impl GuestOrder {
+    pub const ALL: [GuestOrder; 3] = [GuestOrder::Vmid, GuestOrder::VmFirst, GuestOrder::CtFirst];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            GuestOrder::VmFirst => "vm-first",
+            GuestOrder::CtFirst => "ct-first",
+            GuestOrder::Vmid => "vmid",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<GuestOrder> {
+        let s = s.trim().to_lowercase();
+        Self::ALL.iter().copied().find(|o| o.name() == s)
+    }
+
+    pub fn next(self) -> GuestOrder {
+        let i = Self::ALL.iter().position(|o| *o == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    fn rank(self, vm: bool, id: u32) -> (u8, u32) {
+        let first = match self {
+            GuestOrder::VmFirst => !vm as u8,
+            GuestOrder::CtFirst => vm as u8,
+            GuestOrder::Vmid => 0,
+        };
+        (first, id)
+    }
+}
+
+/// ("VM" or "CT", VMID) for a Proxmox guest's label. An unreadable VMID
+/// sorts last.
+fn guest_of(container: &str) -> Option<(bool, u32)> {
+    let (kind, id) = container.split_once(' ')?;
+    let vm = match kind {
+        "VM" => true,
+        "CT" => false,
+        _ => return None,
+    };
+    Some((vm, id.parse().unwrap_or(u32::MAX)))
+}
+
+/// Whether the process belongs to a Proxmox VM or container.
+pub fn in_guest(p: &Proc) -> bool {
+    p.container.as_deref().and_then(guest_of).is_some()
+}
+
+/// A guest's name from its Proxmox config: `name` for a VM, `hostname` for
+/// a container. Only the current settings, not a snapshot's section.
+pub fn read_guest_name(container: &str) -> Option<String> {
+    let (vm, id) = guest_of(container)?;
+    let path = if vm { format!("/etc/pve/qemu-server/{}.conf", id) } else { format!("/etc/pve/lxc/{}.conf", id) };
+    guest_name_in(&fs::read_to_string(path).ok()?, if vm { "name" } else { "hostname" })
+}
+
+fn guest_name_in(conf: &str, key: &str) -> Option<String> {
+    conf.lines()
+        .take_while(|l| !l.starts_with('['))
+        .find_map(|l| l.split_once(':').filter(|(k, _)| k.trim() == key).map(|(_, v)| v.trim().to_string()))
+        .filter(|n| !n.is_empty())
+}
+
+/// A VM's name from QEMU's `-name NAME,debug-threads=on`, where the config
+/// cannot be read.
+fn qemu_name(args: &str) -> Option<String> {
+    let rest = args.split_once("-name ")?.1;
+    let v = rest.split(' ').next()?.split(',').next()?;
+    (!v.is_empty()).then(|| v.to_string())
+}
+
+/// One row per Proxmox VM and container, its processes added together, in
+/// `order`. A guest is listed if any of its processes passes `keep`, or its
+/// name holds `filter`. Guests in `open` have their processes listed under
+/// them, sorted by the sort key; the figures are always the guest's whole.
+#[allow(clippy::too_many_arguments)]
+pub fn guests<'a>(
+    list: &'a [Proc],
+    keep: impl Fn(&Proc) -> bool,
+    filter: &str,
+    order: GuestOrder,
+    names: &HashMap<String, Option<String>>,
+    key: SortKey,
+    desc: bool,
+    open: &HashSet<i32>,
+) -> Vec<Row<'a>> {
+    let mut groups: HashMap<&str, Vec<&'a Proc>> = HashMap::new();
+    for p in list {
+        if let Some(c) = p.container.as_deref().filter(|c| guest_of(c).is_some()) {
+            groups.entry(c).or_default().push(p);
+        }
+    }
+    let mut labels: Vec<&str> = groups.keys().copied().collect();
+    labels.sort_by_key(|l| guest_of(l).map(|(vm, id)| order.rank(vm, id)));
+
+    let needle = filter.to_lowercase();
+    let mut out = Vec::new();
+    for label in labels {
+        let members = &groups[label];
+        let (vm, id) = guest_of(label).unwrap_or((false, u32::MAX));
+        let name = names
+            .get(label)
+            .cloned()
+            .flatten()
+            .or_else(|| vm.then(|| members.iter().find_map(|p| qemu_name(&p.args))).flatten());
+        let kept: Vec<&'a Proc> = members.iter().copied().filter(|p| keep(p)).collect();
+        let named = !needle.is_empty() && name.as_deref().is_some_and(|n| n.to_lowercase().contains(&needle));
+        if kept.is_empty() && !named {
+            continue;
+        }
+        // A negative PID: never a real process, so the signal and renice
+        // keys can refuse it, and the selection can follow it.
+        let pid = if id == u32::MAX { i32::MIN + 1 } else { -(id.min(i32::MAX as u32) as i32) };
+        let sum = Proc {
+            pid,
+            ppid: 0,
+            comm: name.unwrap_or_else(|| label.to_string()),
+            args: String::new(),
+            kernel: false,
+            user: String::new(),
+            container: Some(label.to_string()),
+            state: if members.iter().any(|p| p.state == 'R') { 'R' } else { 'S' },
+            nice: 0,
+            threads: members.iter().map(|p| p.threads).sum(),
+            rss: members.iter().map(|p| p.rss).sum(),
+            cpu_time_s: members.iter().map(|p| p.cpu_time_s).sum(),
+            start: 0,
+            cpu_pct: members.iter().map(|p| p.cpu_pct).sum(),
+            mem_pct: members.iter().map(|p| p.mem_pct).sum(),
+        };
+        let expanded = open.contains(&pid);
+        out.push(Row {
+            p: Cow::Owned(sum),
+            prefix: String::new(),
+            children: members.len(),
+            collapsed: !expanded,
+            sub: None,
+            guest: true,
+        });
+        if expanded {
+            let mut shown = if kept.is_empty() { members.clone() } else { kept };
+            shown.sort_by(|a, b| compare(a, b, key, desc));
+            let n = shown.len();
+            out.extend(shown.into_iter().enumerate().map(|(k, p)| Row {
+                prefix: (if k + 1 == n { "└─" } else { "├─" }).into(),
+                ..Row::of(p)
+            }));
+        }
+    }
+    out
 }
 
 /// The process tree. Siblings are ordered by the sort key. A process is shown
@@ -532,11 +720,11 @@ pub fn tree<'a>(
             let folded = self.collapsed.contains(&p.pid) && !kids.is_empty();
             let prefix = if root { String::new() } else { format!("{}{}", lead, if last { "└─" } else { "├─" }) };
             self.out.push(Row {
-                p,
                 prefix,
                 children: kids.len(),
                 collapsed: folded,
                 sub: folded.then(|| subtree(i, self.list, self.children)),
+                ..Row::of(p)
             });
             if folded {
                 return;
@@ -737,6 +925,66 @@ mod tests {
         let r = rows.iter().find(|r| r.p.pid == 10).unwrap();
         assert!(r.collapsed);
         assert_eq!(r.sub, Some((15.0, 30)));
+    }
+
+    fn guest(pid: i32, at: &str, cpu: f64) -> Proc {
+        Proc { container: Some(at.into()), ..p(pid, 1, cpu) }
+    }
+
+    #[test]
+    fn guests_add_up_in_proxmox_order() {
+        let list = vec![
+            p(1, 0, 1.0),
+            guest(10, "CT 200", 2.0),
+            guest(11, "CT 200", 3.0),
+            guest(20, "VM 205", 50.0),
+            guest(30, "CT 104", 4.0),
+            guest(40, "VM 103", 1.0),
+            Proc { container: Some("docker".into()), ..p(50, 1, 9.0) },
+        ];
+        let names: HashMap<String, Option<String>> = [("CT 104".to_string(), Some("media".to_string()))].into();
+        let none = HashSet::new();
+        let at = |order| -> Vec<String> {
+            guests(&list, |_| true, "", order, &names, SortKey::Cpu, true, &none)
+                .iter()
+                .map(|r| r.p.container.clone().unwrap())
+                .collect()
+        };
+        assert_eq!(at(GuestOrder::VmFirst), ["VM 103", "VM 205", "CT 104", "CT 200"]);
+        assert_eq!(at(GuestOrder::CtFirst), ["CT 104", "CT 200", "VM 103", "VM 205"]);
+        assert_eq!(at(GuestOrder::Vmid), ["VM 103", "CT 104", "CT 200", "VM 205"]);
+
+        let rows = guests(&list, |_| true, "", GuestOrder::Vmid, &names, SortKey::Cpu, true, &none);
+        let ct = rows.iter().find(|r| r.p.container.as_deref() == Some("CT 200")).unwrap();
+        assert!(ct.guest && ct.collapsed);
+        assert_eq!((ct.p.cpu_pct, ct.p.rss, ct.children), (5.0, 20, 2));
+        assert!(ct.p.pid < 0);
+        assert_eq!(rows[1].p.comm, "media");
+        // Docker and the host are not guests.
+        assert!(!in_guest(&list[0]) && !in_guest(&list[6]) && in_guest(&list[1]));
+
+        // Opened: the processes beneath it, by the sort key.
+        let open: HashSet<i32> = [ct.p.pid].into();
+        let rows = guests(&list, |_| true, "", GuestOrder::Vmid, &names, SortKey::Cpu, true, &open);
+        let pids: Vec<i32> = rows.iter().map(|r| r.p.pid).collect();
+        assert_eq!(pids[2..5], [-200, 11, 10]);
+        assert_eq!(rows[4].prefix, "└─");
+
+        // Filtered: a guest stays if a process or its name matches.
+        let rows = guests(&list, |q| q.pid == 20, "med", GuestOrder::Vmid, &names, SortKey::Cpu, true, &none);
+        let kept: Vec<i32> = rows.iter().map(|r| r.p.pid).collect();
+        assert_eq!(kept, [-104, -205]);
+    }
+
+    #[test]
+    fn guest_names_from_config_and_qemu() {
+        let conf = "boot: order=scsi0\nname: files\n\n[snap1]\nname: Old\n";
+        assert_eq!(guest_name_in(conf, "name").as_deref(), Some("files"));
+        assert_eq!(guest_name_in("arch: amd64\nhostname: media\n", "hostname").as_deref(), Some("media"));
+        assert_eq!(guest_name_in("[snap]\nname: x\n", "name"), None);
+        assert_eq!(qemu_name("-id 105 -name web,debug-threads=on -no-shutdown").as_deref(), Some("web"));
+        assert_eq!(GuestOrder::parse("CT-first"), Some(GuestOrder::CtFirst));
+        assert_eq!(GuestOrder::CtFirst.next(), GuestOrder::Vmid);
     }
 
     #[test]
