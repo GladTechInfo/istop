@@ -327,7 +327,7 @@ fn snapshot(app: &mut app::App, cfg: &Config, filter: &str) {
     if cfg.guests {
         let none = HashSet::new();
         let list = &app.procs.list;
-        for r in procs::guests(list, keep, filter, cfg.guest_order, &app.procs.guest_names, cfg.sort, desc, &none) {
+        for r in procs::guests(list, keep, filter, cfg.guest_order, &app.procs.guest_info, cfg.sort, desc, &none) {
             let p = &*r.p;
             let _ = writeln!(
                 o,
@@ -427,7 +427,7 @@ fn rows<'a>(ps: &'a procs::Procs, ui: &Ui) -> Vec<Row<'a>> {
     let host = |p: &Proc| !(grouped && procs::in_guest(p)) && keep(p);
     let mut out = if grouped {
         let c = &ui.cfg;
-        procs::guests(list, keep, &ui.filter, c.guest_order, &ps.guest_names, c.sort, ui.desc, &ui.open_guests)
+        procs::guests(list, keep, &ui.filter, c.guest_order, &ps.guest_info, c.sort, ui.desc, &ui.open_guests)
     } else {
         Vec::new()
     };

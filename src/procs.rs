@@ -56,8 +56,9 @@ pub struct Procs {
     users: HashMap<u32, String>,
     /// Each container's own users, read from inside it once.
     guest_users: HashMap<String, HashMap<u32, String>>,
-    /// Each Proxmox guest's name, read once while it has processes running.
-    pub guest_names: HashMap<String, Option<String>>,
+    /// Each Proxmox guest's name and size, read once while it has processes
+    /// running.
+    pub guest_info: HashMap<String, GuestInfo>,
     passwd_mtime: Option<std::time::SystemTime>,
     last: Option<Instant>,
     pub clk_tck: f64,
@@ -78,7 +79,7 @@ impl Procs {
             cache: HashMap::new(),
             users: read_passwd("/etc/passwd"),
             guest_users: HashMap::new(),
-            guest_names: HashMap::new(),
+            guest_info: HashMap::new(),
             passwd_mtime: passwd_mtime(),
             last: None,
             clk_tck: if clk_tck > 0 { clk_tck as f64 } else { 100.0 },
@@ -164,10 +165,10 @@ impl Procs {
         self.cache.retain(|pid, _| prev.contains_key(pid));
         // Read again after the guest stops, so a rename shows on its restart.
         let running: HashSet<&str> = list.iter().filter_map(|p| p.container.as_deref()).collect();
-        self.guest_names.retain(|g, _| running.contains(g.as_str()));
+        self.guest_info.retain(|g, _| running.contains(g.as_str()));
         for g in running {
-            if guest_of(g).is_some() && !self.guest_names.contains_key(g) {
-                self.guest_names.insert(g.to_string(), read_guest_name(g));
+            if guest_of(g).is_some() && !self.guest_info.contains_key(g) {
+                self.guest_info.insert(g.to_string(), read_guest_info(g));
             }
         }
         self.prev = prev;
@@ -461,11 +462,22 @@ pub struct Row<'a> {
     pub sub: Option<(f64, u64)>,
     /// A whole VM or container, not one process.
     pub guest: bool,
+    /// A guest's cores and memory from its config, e.g. ("22 cores", "16.0G");
+    /// either may be empty.
+    pub alloc: Option<(String, String)>,
 }
 
 impl<'a> Row<'a> {
     fn of(p: &'a Proc) -> Self {
-        Row { p: Cow::Borrowed(p), prefix: String::new(), children: 0, collapsed: false, sub: None, guest: false }
+        Row {
+            p: Cow::Borrowed(p),
+            prefix: String::new(),
+            children: 0,
+            collapsed: false,
+            sub: None,
+            guest: false,
+            alloc: None,
+        }
     }
 }
 
@@ -537,15 +549,46 @@ pub fn in_guest(p: &Proc) -> bool {
     p.container.as_deref().and_then(guest_of).is_some()
 }
 
-/// A guest's name from its Proxmox config: `name` for a VM, `hostname` for
-/// a container. Only the current settings, not a snapshot's section.
-pub fn read_guest_name(container: &str) -> Option<String> {
-    let (vm, id) = guest_of(container)?;
-    let path = if vm { format!("/etc/pve/qemu-server/{}.conf", id) } else { format!("/etc/pve/lxc/{}.conf", id) };
-    guest_name_in(&fs::read_to_string(path).ok()?, if vm { "name" } else { "hostname" })
+/// What a guest's Proxmox config says about it. Each part is `None` where
+/// the config is unreadable (it needs root) or does not set it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GuestInfo {
+    pub name: Option<String>,
+    pub cores: Option<u64>,
+    pub mem_mib: Option<u64>,
 }
 
-fn guest_name_in(conf: &str, key: &str) -> Option<String> {
+impl GuestInfo {
+    /// `22 cores` and `16.0G`, for the row's dimmed detail; empty where unset.
+    fn alloc(&self) -> (String, String) {
+        let cores = self.cores.map(|c| format!("{} {}", c, if c == 1 { "core" } else { "cores" }));
+        let mem =
+            self.mem_mib.map(|m| if m >= 1024 { format!("{:.1}G", m as f64 / 1024.0) } else { format!("{}M", m) });
+        (cores.unwrap_or_default(), mem.unwrap_or_default())
+    }
+}
+
+pub fn read_guest_info(container: &str) -> GuestInfo {
+    let Some((vm, id)) = guest_of(container) else { return GuestInfo::default() };
+    let path = if vm { format!("/etc/pve/qemu-server/{}.conf", id) } else { format!("/etc/pve/lxc/{}.conf", id) };
+    fs::read_to_string(path).map(|c| guest_info_in(&c, vm)).unwrap_or_default()
+}
+
+/// A VM's name, vCPUs (`vcpus`, else cores × sockets) and memory; a
+/// container's hostname, core limit and memory limit. Only the current
+/// settings, not a snapshot's section.
+fn guest_info_in(conf: &str, vm: bool) -> GuestInfo {
+    let get = |key: &str| guest_value(conf, key);
+    let num = |key: &str| get(key).and_then(|v| v.parse::<u64>().ok());
+    let cores = if vm {
+        num("vcpus").or_else(|| Some(num("cores").unwrap_or(1) * num("sockets").unwrap_or(1)))
+    } else {
+        num("cores")
+    };
+    GuestInfo { name: get(if vm { "name" } else { "hostname" }), cores, mem_mib: num("memory") }
+}
+
+fn guest_value(conf: &str, key: &str) -> Option<String> {
     conf.lines()
         .take_while(|l| !l.starts_with('['))
         .find_map(|l| l.split_once(':').filter(|(k, _)| k.trim() == key).map(|(_, v)| v.trim().to_string()))
@@ -570,7 +613,7 @@ pub fn guests<'a>(
     keep: impl Fn(&Proc) -> bool,
     filter: &str,
     order: GuestOrder,
-    names: &HashMap<String, Option<String>>,
+    info: &HashMap<String, GuestInfo>,
     key: SortKey,
     desc: bool,
     open: &HashSet<i32>,
@@ -589,10 +632,10 @@ pub fn guests<'a>(
     for label in labels {
         let members = &groups[label];
         let (vm, id) = guest_of(label).unwrap_or((false, u32::MAX));
-        let name = names
-            .get(label)
-            .cloned()
-            .flatten()
+        let conf = info.get(label).cloned().unwrap_or_default();
+        let name = conf
+            .name
+            .clone()
             .or_else(|| vm.then(|| members.iter().find_map(|p| qemu_name(&p.args))).flatten());
         let kept: Vec<&'a Proc> = members.iter().copied().filter(|p| keep(p)).collect();
         let named = !needle.is_empty() && name.as_deref().is_some_and(|n| n.to_lowercase().contains(&needle));
@@ -627,6 +670,7 @@ pub fn guests<'a>(
             collapsed: !expanded,
             sub: None,
             guest: true,
+            alloc: Some(conf.alloc()),
         });
         if expanded {
             let mut shown = if kept.is_empty() { members.clone() } else { kept };
@@ -942,7 +986,8 @@ mod tests {
             guest(40, "VM 103", 1.0),
             Proc { container: Some("docker".into()), ..p(50, 1, 9.0) },
         ];
-        let names: HashMap<String, Option<String>> = [("CT 104".to_string(), Some("media".to_string()))].into();
+        let media = GuestInfo { name: Some("media".into()), cores: Some(2), mem_mib: Some(512) };
+        let names: HashMap<String, GuestInfo> = [("CT 104".to_string(), media)].into();
         let none = HashSet::new();
         let at = |order| -> Vec<String> {
             guests(&list, |_| true, "", order, &names, SortKey::Cpu, true, &none)
@@ -960,6 +1005,7 @@ mod tests {
         assert_eq!((ct.p.cpu_pct, ct.p.rss, ct.children), (5.0, 20, 2));
         assert!(ct.p.pid < 0);
         assert_eq!(rows[1].p.comm, "media");
+        assert_eq!(rows[1].alloc, Some(("2 cores".into(), "512M".into())));
         // Docker and the host are not guests.
         assert!(!in_guest(&list[0]) && !in_guest(&list[6]) && in_guest(&list[1]));
 
@@ -978,10 +1024,15 @@ mod tests {
 
     #[test]
     fn guest_names_from_config_and_qemu() {
-        let conf = "boot: order=scsi0\nname: files\n\n[snap1]\nname: Old\n";
-        assert_eq!(guest_name_in(conf, "name").as_deref(), Some("files"));
-        assert_eq!(guest_name_in("arch: amd64\nhostname: media\n", "hostname").as_deref(), Some("media"));
-        assert_eq!(guest_name_in("[snap]\nname: x\n", "name"), None);
+        let conf = "boot: order=scsi0\ncores: 4\nmemory: 16384\nname: files\nsockets: 2\n\n[snap1]\nname: Old\n";
+        let vm = guest_info_in(conf, true);
+        assert_eq!(vm, GuestInfo { name: Some("files".into()), cores: Some(8), mem_mib: Some(16384) });
+        assert_eq!(vm.alloc(), ("8 cores".into(), "16.0G".into()));
+        assert_eq!(guest_info_in("vcpus: 3\ncores: 4\n", true).cores, Some(3));
+        let ct = guest_info_in("arch: amd64\nhostname: media\nmemory: 512\n", false);
+        assert_eq!(ct, GuestInfo { name: Some("media".into()), cores: None, mem_mib: Some(512) });
+        assert_eq!(ct.alloc(), (String::new(), "512M".into()));
+        assert_eq!(guest_info_in("[snap]\nname: x\n", true).name, None);
         assert_eq!(qemu_name("-id 105 -name web,debug-threads=on -no-shutdown").as_deref(), Some("web"));
         assert_eq!(GuestOrder::parse("CT-first"), Some(GuestOrder::CtFirst));
         assert_eq!(GuestOrder::CtFirst.next(), GuestOrder::Vmid);

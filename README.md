@@ -182,7 +182,7 @@ curl -LO "$base/istop_${ver}-1_amd64.deb"        # Debian, Ubuntu, Proxmox VE
 curl -LO "$base/istop-${ver}-1.x86_64.rpm"       # Fedora, RHEL, openSUSE
 ```
 
-To install a particular version instead of the latest, set it by hand, for example `ver=0.3.2`.
+To install a particular version instead of the latest, set it by hand, for example `ver=0.4.0`.
 
 **Step 2 — check the download.** This must print `OK` for the file you downloaded:
 
@@ -294,7 +294,7 @@ cargo build --release
 sudo install -m 0755 target/release/istop /usr/local/bin/istop
 ```
 
-To build a particular release, check out its tag first, for example `git checkout v0.3.2`. For a
+To build a particular release, check out its tag first, for example `git checkout v0.4.0`. For a
 static binary that runs on other machines, see [Static builds](#static-builds).
 
 ### 5.7 Updating
@@ -609,7 +609,7 @@ speed (bridges, most virtual NICs) are drawn automatically under `link`.
 | **PID** | Process ID. |
 | **WHERE** | `CT n` or `VM n` on Proxmox VE, `docker`, `podman`, or `host`. |
 | **USER** | The owner; inside an unprivileged container, the name from that container's own user list. |
-| **PROCESS** | The program name, followed by its arguments in a dimmer colour. In tree view, branches are drawn with `├─` and `└─`; an unfolded parent is marked `-`, and a folded one `+N` (in amber, with N its number of children) — its row then shows the totals of the whole branch. With guests first (`v`), a guest row shows the guest's name in blue, marked `+N` with N its number of processes; PID, USER and NI are blank, and the figures are the sums of all its processes, whatever the filter. |
+| **PROCESS** | The program name, followed by its arguments in a dimmer colour. In tree view, branches are drawn with `├─` and `└─`; an unfolded parent is marked `-`, and a folded one `+N` (in amber, with N its number of children) — its row then shows the totals of the whole branch. With guests first (`v`), a guest row shows the guest's name in blue, marked `+N` with N its number of processes, then what its configuration allows, dimmed: `22 cores · 16.0G` (a VM's vCPUs and memory; a container's core and memory limits, where set). PID, USER and NI are blank, and the figures are the sums of all its processes, whatever the filter. A faint dotted line fills the rest of the column on every row, to lead the eye to the figures. |
 | **NI** | Nice value: −20 (highest priority) to 19 (lowest). |
 | **THR** | Number of threads. |
 | **TIME** | CPU time used since the process started (minutes:seconds.hundredths). |
@@ -866,8 +866,9 @@ container, `qemu.slice/<id>.scope` a Proxmox VM's QEMU process, and `docker`/`li
 and Podman. **USER** inside an unprivileged container is resolved by mapping the UID back through the
 process's `uid_map` and looking it up in the container's own `/etc/passwd`.
 
-With guests first, a guest's name comes from its configuration in `/etc/pve` (`name` for a VM,
-`hostname` for a container; root only), else from QEMU's `-name` argument. Its memory is the sum of
+With guests first, a guest's name, cores and memory come from its configuration in `/etc/pve`
+(`name`, `vcpus` or `cores` × `sockets`, and `memory` for a VM; `hostname`, `cores` and `memory` for a
+container; root only). Without it, a VM's name comes from QEMU's `-name` argument. Its memory is the sum of
 its processes' resident memory, so pages shared between a container's processes count more than once;
 it is not the guest's cgroup total, which also counts page cache.
 

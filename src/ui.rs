@@ -130,6 +130,17 @@ fn tail(s: &str, w: usize) -> String {
     }
 }
 
+/// `s` cut to `w` characters, the end replaced by `…` if it does not fit.
+fn cut(s: &str, w: usize) -> String {
+    if s.chars().count() <= w {
+        s.to_string()
+    } else if w == 0 {
+        String::new()
+    } else {
+        format!("{}…", s.chars().take(w - 1).collect::<String>())
+    }
+}
+
 // ─────────────────────────── primitives ───────────────────────────
 
 /// Writes `s` at (x, y), clipped to `w` cells. Returns the x after it.
@@ -901,6 +912,42 @@ fn columns() -> [Col; 10] {
     ]
 }
 
+/// The parts of a guest row's PROCESS cell, lined up across all guest rows:
+/// the `+N` marker, the name, the cores and the memory, in cells. A zero
+/// width is a part left out.
+#[derive(Debug, PartialEq)]
+struct GuestCols {
+    mark: usize,
+    name: usize,
+    cores: usize,
+    mem: usize,
+}
+
+/// The shortest a name is cut to before the cores, then the memory, give way.
+const GUEST_NAME_MIN: usize = 8;
+
+/// Fits the guest rows' parts into a PROCESS column `width` cells wide. On a
+/// narrow terminal the name is cut first, down to `GUEST_NAME_MIN`; then the
+/// cores are left out, then the memory.
+fn guest_cols(rows: &[Row], width: usize) -> GuestCols {
+    let widest = |f: &dyn Fn(&Row) -> usize| rows.iter().filter(|r| r.guest).map(f).max().unwrap_or(0);
+    let mark = widest(&|r| format!("+{} ", r.children).chars().count());
+    let name = widest(&|r| r.p.comm.chars().count());
+    let alloc = |r: &Row, second: bool| {
+        r.alloc.as_ref().map_or(0, |(c, m)| if second { m } else { c }.chars().count())
+    };
+    let cores = widest(&|r| alloc(r, false));
+    let mem = widest(&|r| alloc(r, true));
+    let part = |w: usize| if w > 0 { w + 2 } else { 0 };
+    for (c, m) in [(cores, mem), (0, mem)] {
+        let room = width.saturating_sub(mark + part(c) + part(m));
+        if room >= name.min(GUEST_NAME_MIN) {
+            return GuestCols { mark, name: name.min(room), cores: c, mem: m };
+        }
+    }
+    GuestCols { mark, name: name.min(width.saturating_sub(mark)), cores: 0, mem: 0 }
+}
+
 /// Height of the detail box inside the process box.
 const DETAIL_H: u16 = 9;
 
@@ -973,6 +1020,7 @@ fn draw_procs(f: &mut Frame, area: Rect, v: &View) -> Hit {
     let hit = Hit { rows: Rect { y: inner.y + 1, height: page as u16, ..inner } };
     let colours = ramp_cells(CPU_BAR);
     let threads = v.app.threads.max(1) as f64;
+    let gcols = guest_cols(v.rows, widths[3]);
     for (row, r) in v.rows.iter().skip(v.offset).take(page).enumerate() {
         let p = &*r.p;
         let y = inner.y + 1 + row as u16;
@@ -1016,6 +1064,7 @@ fn draw_procs(f: &mut Frame, area: Rect, v: &View) -> Hit {
         if !r.prefix.is_empty() {
             x = put(buf, x, y, (end - x) as usize, &r.prefix, Style::default().fg(TRACK));
         }
+        let start = x;
         if (v.tree || r.guest) && r.children > 0 {
             let mark = if r.collapsed { format!("+{} ", r.children) } else { "- ".into() };
             x = put(buf, x, y, (end - x) as usize, &mark, Style::default().fg(if r.collapsed { AMBER } else { CHROME }));
@@ -1033,9 +1082,38 @@ fn draw_procs(f: &mut Frame, area: Rect, v: &View) -> Hit {
                 _ => TEXT,
             }
         };
-        x = put(buf, x, y, (end.saturating_sub(x)) as usize, &name, bold(Style::default().fg(name_colour)));
+        if r.guest {
+            // Lined up with the other guests: marker, name, then the cores
+            // and memory right-aligned in their own columns, dots between.
+            let at = start + gcols.mark as u16;
+            x = put(buf, at, y, end.saturating_sub(at) as usize, &cut(&name, gcols.name), bold(Style::default().fg(name_colour)));
+            let (cores, mem) = r.alloc.clone().unwrap_or_default();
+            let mut parts = Vec::new();
+            if gcols.cores > 0 {
+                parts.push(format!("{:>w$}", cores, w = gcols.cores));
+            }
+            if gcols.mem > 0 {
+                parts.push(format!("{:>w$}", mem, w = gcols.mem));
+            }
+            if !parts.is_empty() {
+                let ax = at + gcols.name as u16 + 2;
+                if ax > x + 2 {
+                    let n = (ax - x - 2) as usize;
+                    put(buf, x + 1, y, n, &"·".repeat(n), Style::default().fg(TRACK));
+                }
+                x = put(buf, ax, y, end.saturating_sub(ax) as usize, &parts.join("  "), Style::default().fg(DIM));
+            }
+        } else {
+            x = put(buf, x, y, (end.saturating_sub(x)) as usize, &name, bold(Style::default().fg(name_colour)));
+        }
         if !p.args.is_empty() && x + 1 < end {
-            put(buf, x + 1, y, (end - x - 1) as usize, &p.args, Style::default().fg(DIM));
+            x = put(buf, x + 1, y, (end - x - 1) as usize, &p.args, Style::default().fg(DIM));
+        }
+        // A faint dotted line through the rest of the column leads the eye
+        // from a short name across to its figures.
+        if x + 2 < end {
+            let n = (end - x - 2) as usize;
+            put(buf, x + 1, y, n, &"·".repeat(n), Style::default().fg(TRACK));
         }
 
         let ni_colour = match p.nice {
@@ -1375,6 +1453,46 @@ mod tests {
         // A quarter hanging from the top: the lower three quarters, reversed.
         assert_eq!(down[(3, 0)].symbol(), "▆");
         assert!(down[(3, 0)].modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn guest_parts_give_way_on_a_narrow_column() {
+        let proc_ = |name: &str| procs::Proc {
+            pid: -1,
+            ppid: 0,
+            comm: name.into(),
+            args: String::new(),
+            kernel: false,
+            user: String::new(),
+            container: None,
+            state: 'S',
+            nice: 0,
+            threads: 1,
+            rss: 0,
+            cpu_time_s: 0.0,
+            start: 0,
+            cpu_pct: 0.0,
+            mem_pct: 0.0,
+        };
+        let a = proc_("a-rather-long-name");
+        let b = proc_("db");
+        let row = |p, n, c: &str, m: &str| Row {
+            p: std::borrow::Cow::Borrowed(p),
+            prefix: String::new(),
+            children: n,
+            collapsed: true,
+            sub: None,
+            guest: true,
+            alloc: Some((c.into(), m.into())),
+        };
+        let rows = vec![row(&a, 12, "22 cores", "16.0G"), row(&b, 1, "4 cores", "512M")];
+        // "+12 " 4, name 18, cores 8 + 2, memory 5 + 2: 39 cells in all.
+        assert_eq!(guest_cols(&rows, 60), GuestCols { mark: 4, name: 18, cores: 8, mem: 5 });
+        assert_eq!(guest_cols(&rows, 30), GuestCols { mark: 4, name: 9, cores: 8, mem: 5 });
+        assert_eq!(guest_cols(&rows, 20), GuestCols { mark: 4, name: 9, cores: 0, mem: 5 });
+        assert_eq!(guest_cols(&rows, 10), GuestCols { mark: 4, name: 6, cores: 0, mem: 0 });
+        assert_eq!(cut("a-rather-long-name", 8), "a-rathe…");
+        assert_eq!(cut("db", 8), "db");
     }
 
     #[test]
