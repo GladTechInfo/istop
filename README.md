@@ -6,13 +6,23 @@
 [![Rust 1.88 or later](https://img.shields.io/badge/rust-1.88%2B-orange)](#11-development)
 ![Platform: Linux x86-64](https://img.shields.io/badge/platform-Linux%20x86--64-lightgrey)
 
+![istop live on a 44-thread Proxmox VE host under load, then the guests view and the tree, in real time](docs/images/istop-live.gif)
+
+**Install** — on any x86-64 Linux, one command installs the latest release (`.deb`, `.rpm` or a
+static binary, checked against the release's `SHA256SUMS`):
+
+```sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/GladTechInfo/istop/main/install.sh)"
+```
+
+Then run `istop`; `q` quits and `?` lists every key. More in [Quick Start](#4-quick-start) and
+[Installation](#5-installation).
+
 **A terminal system monitor for Linux: CPU, memory, disks, network and processes in one screen.**
 It labels every process with the Proxmox container or VM, Docker or Podman container it runs in,
 shows ZFS pools and the ARC the way ZFS counts them, and scales network graphs to the port's link
 speed. It is the system-wide companion to [igtop](https://github.com/GladTechInfo/igtop) (GPUs) and
 [iztop](https://github.com/GladTechInfo/iztop) (ZFS pools), and shares their look.
-
-![istop on a 22-thread machine running demonstration workloads](docs/images/istop-interface-annotated.png)
 
 ## Contents
 
@@ -85,12 +95,12 @@ changes your defaults by accident.
 
 ## 3. Screenshots
 
-All screenshots are genuine captures of istop. To keep them free of private data, istop ran in its
-own PID, host-name and cgroup namespaces (host name `demo`) on a virtual machine, alongside
-demonstration workloads — `xz`, `yes`, `sha256sum`, a small web server, a download and disk copies
-— running as the `nobody`, `www-data` and `daemon` users, and three small demonstration ZFS pools
-(`backup`, `fast`, `tank`). Nothing has been edited. Because the machine is a VM, there is no CPU
-temperature, power or clock ceiling to show.
+All screenshots and animations are genuine captures of istop on a Proxmox VE host — a 44-thread
+Xeon with 252 GiB of memory, four ZFS pools, a 10 Gbit/s port, and its own VMs and containers —
+during a few minutes of extra load: six `xz` processes, a download and a large file read from a
+pool. To keep the host private, its name, the CPU's model number, pool names, three website names
+and one file path were replaced after capture (the host appears as `node1`), cell for cell; every
+figure, colour and layout is as istop drew it.
 
 **The whole screen, with each area numbered** — explained in
 [Understanding the Interface](#8-understanding-the-interface).
@@ -100,6 +110,13 @@ temperature, power or clock ceiling to show.
 **The detail box** (`Enter`) for the busiest process, above the process list.
 
 ![istop: process detail box](docs/images/istop-detail.png)
+
+**Guests first** (`v`) — one row per Proxmox VM and container, its processes added together, in
+VMID order; `Enter` on a guest row lists its processes, and `e` switches to the tree.
+
+![istop: guests view, a guest expanded, then the tree](docs/images/istop-guests-tree.gif)
+
+![istop: guests view](docs/images/istop-guests.png)
 
 **Tree view** (`e`) — each process under its parent.
 
@@ -383,7 +400,13 @@ processes. Press `?` at any time for the list of keys, and `q` to quit. A larger
 
 ![Filter typed in the process box title](docs/images/istop-filter.png)
 
-*After `/`, `s`, `h`, `Enter`: the list shows only processes matching `sh` (1).*
+*After `/`, `x`, `z`, `Enter`: the list shows only processes matching `xz` (1) — the busy `xz`
+processes and the `timeout` commands that started them.*
+
+![A guest row expanded](docs/images/istop-guests-expanded.png)
+
+*After `v`, then `Enter` on the first guest row: the container's processes are listed beneath it,
+with their users by name from the container's own user list.*
 
 ### Troubleshooting
 
@@ -482,7 +505,7 @@ priority), from −20 (highest) to 19 (lowest); `Enter` applies it and any other
 
 ![Header confirming the network scale](docs/images/istop-netscale-message.png)
 
-*After `m` on an interface that reports no speed: the scale is now a fixed 100 Mbit/s.*
+*After `m` on a 10 Gbit/s port: the scale steps from the link speed to `auto`.*
 
 <a id="disks-menu"></a>
 ### Disks menu
@@ -627,8 +650,8 @@ speed (bridges, most virtual NICs) are drawn automatically under `link`.
 
 ![CPU % of the whole machine](docs/images/istop-per-machine.png)
 
-*After `c`: the title reads `cpu % of the machine`, and `xz`'s four busy threads read about 18 %
-on this 22-thread machine instead of 400 %.*
+*After `c`: the title reads `cpu % of the machine`, and each single-threaded `xz` process reads
+about 2.3 % of this 44-thread machine instead of 100 %.*
 
 ### The detail box
 
