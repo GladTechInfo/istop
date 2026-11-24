@@ -206,7 +206,7 @@ curl -LO "$base/istop_${ver}-1_amd64.deb"        # Debian, Ubuntu, Proxmox VE
 curl -LO "$base/istop-${ver}-1.x86_64.rpm"       # Fedora, RHEL, openSUSE
 ```
 
-To install a particular version instead of the latest, set it by hand, for example `ver=0.4.0`.
+To install a particular version instead of the latest, set it by hand, for example `ver=0.4.1`.
 
 **Step 2 — check the download.** This must print `OK` for the file you downloaded:
 
@@ -318,7 +318,7 @@ cargo build --release
 sudo install -m 0755 target/release/istop /usr/local/bin/istop
 ```
 
-To build a particular release, check out its tag first, for example `git checkout v0.4.0`. For a
+To build a particular release, check out its tag first, for example `git checkout v0.4.1`. For a
 static binary that runs on other machines, see [Static builds](#static-builds).
 
 ### 5.7 Updating

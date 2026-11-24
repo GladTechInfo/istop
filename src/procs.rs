@@ -184,11 +184,17 @@ impl Procs {
     fn user_name(&mut self, pid: i32, uid: u32, container: Option<&str>) -> String {
         if let Some(ct) = container.filter(|c| c.starts_with("CT ")) {
             if let Some(inner) = inner_uid(pid, uid) {
-                let users = self
-                    .guest_users
-                    .entry(ct.to_string())
-                    .or_insert_with(|| read_passwd(&format!("/proc/{}/root/etc/passwd", pid)));
-                if let Some(n) = users.get(&inner) {
+                // The user list is read once per container, through the
+                // process's root. A chrooted process (Postfix's `pickup`, for
+                // one) has another root with no `/etc/passwd`, so its parents
+                // are asked in turn; if none can be read, nothing is kept and
+                // the container's next process tries again.
+                if !self.guest_users.contains_key(ct) {
+                    if let Some(users) = container_passwd(pid) {
+                        self.guest_users.insert(ct.to_string(), users);
+                    }
+                }
+                if let Some(n) = self.guest_users.get(ct).and_then(|u| u.get(&inner)) {
                     return n.clone();
                 }
                 return inner.to_string();
@@ -308,7 +314,39 @@ pub fn container_of(cgroup: &str) -> Option<String> {
 }
 
 fn read_passwd(path: &str) -> HashMap<u32, String> {
-    let s = fs::read_to_string(path).unwrap_or_default();
+    try_read_passwd(path).unwrap_or_default()
+}
+
+/// The user table seen from `pid`'s root, else from its nearest parent whose
+/// root has one (at most eight levels up, never the host's PID 1).
+fn container_passwd(pid: i32) -> Option<HashMap<u32, String>> {
+    let mut p = pid;
+    for _ in 0..8 {
+        if let Some(users) = try_read_passwd(&format!("/proc/{}/root/etc/passwd", p)) {
+            return Some(users);
+        }
+        p = parent_pid(p)?;
+        if p <= 1 {
+            return None;
+        }
+    }
+    None
+}
+
+/// The parent PID from `/proc/<pid>/status` (`PPid:` line).
+fn parent_pid(pid: i32) -> Option<i32> {
+    let s = fs::read_to_string(format!("/proc/{}/status", pid)).ok()?;
+    s.lines().find_map(|l| l.strip_prefix("PPid:")).and_then(|v| v.trim().parse().ok())
+}
+
+/// The UID-to-name table of a passwd file, or `None` if the file cannot be
+/// read or names nobody (so that a caller can try another path).
+fn try_read_passwd(path: &str) -> Option<HashMap<u32, String>> {
+    let users = parse_passwd(&fs::read_to_string(path).ok()?);
+    if users.is_empty() { None } else { Some(users) }
+}
+
+fn parse_passwd(s: &str) -> HashMap<u32, String> {
     s.lines()
         .filter_map(|l| {
             let v: Vec<&str> = l.split(':').collect();
@@ -890,6 +928,21 @@ pub fn state_name(c: char) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passwd_lines_become_uid_names() {
+        let u = parse_passwd("root:x:0:0:root:/root:/bin/sh\npostfix:x:101:103::/var/spool/postfix:/usr/sbin/nologin\n# comment\n");
+        assert_eq!(u.get(&0).map(String::as_str), Some("root"));
+        assert_eq!(u.get(&101).map(String::as_str), Some("postfix"));
+        assert_eq!(u.len(), 2);
+    }
+
+    #[test]
+    fn unreadable_passwd_is_not_kept() {
+        // A chrooted process's root has no /etc/passwd: no table, so the
+        // container's next process is tried.
+        assert!(try_read_passwd("/nonexistent/etc/passwd").is_none());
+    }
 
     #[test]
     fn stat_with_awkward_name() {
