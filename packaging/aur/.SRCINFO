@@ -1,6 +1,6 @@
 pkgbase = istop
 	pkgdesc = Terminal system monitor: CPU, memory, disks, ZFS pools, network and processes, with per-container attribution
-	pkgver = 0.4.0
+	pkgver = 0.4.1
 	pkgrel = 1
 	url = https://github.com/GladTechInfo/istop
 	arch = x86_64
@@ -9,7 +9,7 @@ pkgbase = istop
 	depends = libgcc
 	depends = glibc
 	options = !debug
-	source = istop-0.4.0.tar.gz::https://github.com/GladTechInfo/istop/archive/refs/tags/v0.4.0.tar.gz
-	sha256sums = 3fc899d7c6d7764acdbe4398e5ad4c3c1c3dff032366f387ff8cbb5d7030595b
+	source = istop-0.4.1.tar.gz::https://github.com/GladTechInfo/istop/archive/refs/tags/v0.4.1.tar.gz
+	sha256sums = 5215b7b63051be6785d05496c0b8d3f8adfb7f8eb1a520051ecdcbbbd77d0637
 
 pkgname = istop
